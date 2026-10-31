@@ -103,6 +103,12 @@ enum Cmd {
         /// Write a PNG of the final screen.
         #[arg(long)]
         screenshot: Option<PathBuf>,
+        /// Also write a PNG every N ms of emulated time (after the key script)
+        /// into --shots-dir.
+        #[arg(long)]
+        shot_every: Option<f64>,
+        #[arg(long, default_value = "screenshots")]
+        shots_dir: PathBuf,
         /// Write every Forth word entered (return-stack pointer, CFA, name) to a file.
         #[arg(long)]
         trace_forth: Option<PathBuf>,
@@ -224,6 +230,7 @@ fn cmd_headless(
     mhz: f64,
     text: bool,
     screenshot: Option<&Path>,
+    shots: Option<(f64, &Path)>,
     trace_forth: Option<&Path>,
     files: bool,
 ) -> Result<()> {
@@ -245,7 +252,28 @@ fn cmd_headless(
     eprintln!("{}", credits::BANNER);
     let mut s = Session::new(&slot, mhz, trace)?;
     s.show_text = text;
-    let result = s.play_script(&script).and_then(|_| s.run_ms(run_ms));
+    let result = s.play_script(&script).and_then(|_| match shots {
+        None => s.run_ms(run_ms),
+        Some((every, dir)) => {
+            std::fs::create_dir_all(dir).map_err(|e| pc::Stop::Unsupported(format!("creating {}: {e}", dir.display())))?;
+            let mut done = 0.0;
+            let mut n = 0;
+            while done < run_ms {
+                let step = every.min(run_ms - done);
+                s.run_ms(step)?;
+                done += step;
+                n += 1;
+                let mut frame = pc::video::Frame::default();
+                s.machine.render(&mut frame);
+                let t = pc::Machine::master_to_ms(s.machine.now()) / 1000.0;
+                let p = dir.join(format!("shot-{n:04}-{t:07.2}s.png"));
+                if let Err(e) = write_png(&p, &frame) {
+                    eprintln!("{}: {e}", p.display());
+                }
+            }
+            Ok(())
+        }
+    });
     if !text {
         if let Some(lines) = s.machine.bus.video.text_lines() {
             let last = lines.iter().rposition(|l| !l.trim().is_empty()).map_or(0, |i| i + 1);
@@ -331,7 +359,20 @@ fn main() -> Result<()> {
             println!("restored save {name:?} from backup {backup}");
             Ok(())
         }
-        Cmd::Headless { save, keep, game_dir, keys, run_ms, mhz, text, screenshot, trace_forth, files } => cmd_headless(
+        Cmd::Headless {
+            save,
+            keep,
+            game_dir,
+            keys,
+            run_ms,
+            mhz,
+            text,
+            screenshot,
+            shot_every,
+            shots_dir,
+            trace_forth,
+            files,
+        } => cmd_headless(
             &saves,
             &save,
             keep,
@@ -341,6 +382,7 @@ fn main() -> Result<()> {
             mhz,
             text,
             screenshot.as_deref(),
+            shot_every.map(|e| (e, shots_dir.as_path())),
             trace_forth.as_deref(),
             files,
         ),

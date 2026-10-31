@@ -37,11 +37,21 @@ as optional, clearly separated fast paths.
 | --- | --- |
 | `crates/cpu8086` | 8086 interpreter core. No dependencies. |
 | `crates/cpu8086/tests/sst.rs` | SingleStepTests 8088 harness. |
-| `crates/pc` | Machine: memory map, PIC, PIT, keyboard, speaker, CGA/EGA, BIOS and DOS HLE. No SDL. |
+| `crates/pc/src/machine.rs` | Run loop: interrupts, traps, device events, idle skipping. |
+| `crates/pc/src/bus.rs` | Memory map, port decoding, master clock (1/256 of 14.318 MHz ticks). |
+| `crates/pc/src/bios.rs` | ROM image with trap stubs at XT addresses, IVT, BDA, INT 08/09/16/1A. |
+| `crates/pc/src/dos/` | COM loader and INT 21h FCB file I/O over a save-slot directory. |
+| `crates/pc/src/video/` | EGA: planes and latches, text and mode 0Dh rendering, INT 10h. |
+| `crates/pc/src/{pic,pit,keyboard}.rs` | 8259, 8253 (+ speaker state), XT keyboard and scan-code translation. |
+| `crates/pc/src/hle.rs` | Helpers for trap handlers; BDA addresses. |
 | `crates/sfforth/src/consts.rs` | Fixed addresses in STARFLT.COM. |
 | `crates/sfforth/src/dict.rs` | Dictionary header decoding. |
 | `crates/sfforth/src/directory.rs` | STARA/STARB directory parsing. |
+| `crates/sfforth/src/{trace,decompile}.rs` | Word-entry tracing (NEXT's `jmp [bx]`), colon-definition listing. |
 | `crates/starflight/src/main.rs` | The `starflight` CLI. |
+| `crates/starflight/src/session.rs` | Machine + Forth view, paced key scripts, stop reports. |
+| `crates/starflight/src/{sdl,audio}.rs` | SDL window, input mapping, PC-speaker synthesis. |
+| `crates/starflight/src/saves.rs` | Save slots and backups. |
 | `crates/starflight/src/credits.rs` | Credits text; keep in step with CREDITS.md. |
 
 ## Invariants that are easy to break
@@ -54,6 +64,13 @@ as optional, clearly separated fast paths.
 - The four vocabulary chains are disjoint and together hold 1703 headers.
 - Directory entries do not cross 1 KiB block boundaries: 48 entries of 21
   bytes per block, four blocks. An entry's position is its FILE#.
+- No CPU decode cache: the game rewrites its own code (0x193, 0x16C9).
+- XKEYINT empties the BIOS key buffer on every key press, so scripted keys
+  must wait until the previous one was taken (`Session::press`).
+- Trap stubs must stay at the IBM XT BIOS addresses; the game jumps to
+  F000:E987 directly.
+- One clock drives PIT readback, IRQ0, retrace bits and pacing; stubbing any
+  of them changes game speed or hangs polling loops.
 
 ## How to test
 

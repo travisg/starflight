@@ -37,15 +37,15 @@ prints the same list.
 
 ## Status
 
-The dictionary and directory tools work, and the 8086 core passes all
-2,559,500 documented-instruction tests of the SingleStepTests 8088 suite. The
-emulator does not run the game yet. The plan, in order:
+The game boots and runs: the display menu (Black/white, RGB, Composite,
+Hercules, EGA), and with EGA the Binary Systems credits, the title screen,
+the Interstel Police warning and the starport. Only EGA is emulated so far.
+The 8086 core passes all 2,559,500 documented-instruction tests of the
+SingleStepTests 8088 suite. Remaining milestones:
 
-1. M1 (done): 8086 core, checked against SingleStepTests.
-2. M2: machine, BIOS and DOS emulation; boots headless to the display menu.
-3. M3: SDL window, EGA graphics, keyboard and PC speaker; title screens.
-4. M4: playability across the game; SAVE GAME and resume.
-5. M5: save management, speed control, CGA.
+1. M4: playability across the game (flight, planets, encounters, combat);
+   SAVE GAME and resume, checked against DOSBox.
+2. M5: save management polish, speed control, CGA.
 
 ## Building
 
@@ -87,6 +87,8 @@ starflight play --save mygame     # another slot
 starflight play --mhz 8           # emulated CPU speed (default 4.77, the IBM PC)
 ```
 
+The machine is paced to real time; the game's own clock runs off the
+emulated timer, so timed delays keep their original length at any `--mhz`.
 In the window: F11 toggles fullscreen, F12 toggles turbo, Pause pauses. The
 arrow keys, Home/End/PgUp/PgDn and the numeric keypad are the XT keypad.
 
@@ -116,12 +118,14 @@ unless `--keep` is given.
 starflight headless --run-ms 8000 --text
 starflight headless --keys '1{wait 2000}{enter}' --screenshot out.png
 starflight headless --trace-forth trace.txt --files
+starflight headless --keys '{wait 3000}5{enter}' --run-ms 60000 --shot-every 4000
 ```
 
 Keys are typed one at a time, each after the game has taken the previous one
 (its keyboard handler drops buffered keys). `--trace-forth` writes every Forth
 word the game executes (return-stack pointer, code field address, name);
-`--files` lists the game's file transfers by directory entry. If the machine
+`--files` lists the game's file transfers by directory entry; `--shot-every
+MS` writes a PNG every MS of emulated time into `screenshots/` (gitignored). If the machine
 stops (an unknown opcode, port or DOS function), the report shows where, the
 registers and the most recent Forth words.
 
@@ -129,6 +133,7 @@ registers and the most recent Forth words.
 
 ```sh
 starflight words      # every word in STARFLT.COM's dictionary, with its type
+starflight decompile COLD   # a colon definition's threaded code (name or hex CFA)
 starflight dir        # the STARA/STARB file directory (FILE# table)
 starflight credits    # who made the game and whose work this builds on
 ```
