@@ -13,7 +13,7 @@
 //! `jmp F000:E987`. Each stub is `FE F8 nn` (trap nn) followed by IRET; the
 //! timer stub then calls INT 1Ch and sends the EOI as the real one does.
 
-use crate::hle::{Hle, bda, rd16, rd8, set_stacked_flag, wr16, wr8};
+use crate::hle::{Hle, bda, rd8, rd16, set_stacked_flag, wr8, wr16};
 use crate::keyboard::{KeyEvent, translate};
 use cpu8086::{AX, CX, Cpu, DX, flags, phys};
 
@@ -111,10 +111,7 @@ fn tick_count(ram: &[u8]) -> u32 {
 
 /// The BIOS clock at power-on: the UTC time of day in 18.2 Hz ticks.
 fn ticks_from_time_of_day() -> u32 {
-    let secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
+    let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
     ((secs % 86_400 * TICKS_PER_DAY as u64) / 86_400) as u32
 }
 

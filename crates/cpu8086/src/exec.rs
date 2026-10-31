@@ -805,8 +805,7 @@ impl Cpu {
         }
         if repeated {
             self.regs[CX] = self.regs[CX].wrapping_sub(1);
-            let more = self.regs[CX] != 0
-                && (!compares || self.flag(ZF) == (self.rep == Rep::Z));
+            let more = self.regs[CX] != 0 && (!compares || self.flag(ZF) == (self.rep == Rep::Z));
             if more {
                 self.ip = self.instr_ip;
                 self.rep_pending = true;

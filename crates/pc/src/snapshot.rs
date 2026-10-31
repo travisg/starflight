@@ -64,8 +64,7 @@ impl Machine {
         if version != VERSION {
             return Err(format!("snapshot format version {version}; this build reads version {VERSION}"));
         }
-        let mut m: Machine =
-            options().deserialize(&raw[HEADER_LEN..]).map_err(|e| format!("corrupt snapshot: {e}"))?;
+        let mut m: Machine = options().deserialize(&raw[HEADER_LEN..]).map_err(|e| format!("corrupt snapshot: {e}"))?;
         if m.bus.ram.len() != RAM_LEN || !m.bus.video.sizes_ok() {
             return Err("corrupt snapshot: memory of the wrong size".to_string());
         }

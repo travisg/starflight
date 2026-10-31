@@ -56,7 +56,9 @@ impl StateInfo {
     fn parse(name: &str, text: &str) -> StateInfo {
         let mut info = StateInfo { name: name.to_string(), ..Default::default() };
         for line in text.lines() {
-            let Some((k, v)) = line.split_once(':') else { continue };
+            let Some((k, v)) = line.split_once(':') else {
+                continue;
+            };
             let v = v.trim();
             match k.trim() {
                 "created" => info.created = v.to_string(),
@@ -340,10 +342,7 @@ fn copy_with_mtime(src: &Path, dst: &Path) -> Result<()> {
 
 /// The current UTC time as (year, month, day, hour, minute, second).
 fn utc_now() -> (i64, u32, u32, u64, u64, u64) {
-    let secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
+    let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
     let (days, rem) = (secs / 86_400, secs % 86_400);
     let (y, m, d) = civil_from_days(days as i64);
     (y, m, d, rem / 3600, rem / 60 % 60, rem % 60)

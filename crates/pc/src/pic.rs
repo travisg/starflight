@@ -110,11 +110,7 @@ impl Pic {
     }
 
     pub fn read(&self, port: u16) -> u8 {
-        if port & 1 == 0 {
-            if self.read_isr { self.isr } else { self.irr }
-        } else {
-            self.imr
-        }
+        if port & 1 == 0 { if self.read_isr { self.isr } else { self.irr } } else { self.imr }
     }
 }
 

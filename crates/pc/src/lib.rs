@@ -47,7 +47,9 @@ impl fmt::Display for Stop {
             Stop::UnknownPort { port, write: Some(v) } => write!(f, "write of {v:02X} to unknown I/O port {port:04X}"),
             Stop::UnknownPort { port, write: None } => write!(f, "read of unknown I/O port {port:04X}"),
             Stop::Unsupported(what) => write!(f, "unsupported: {what}"),
-            Stop::StrayTrap { number, cs, ip } => write!(f, "emulator trap {number:02X} outside the ROM at {cs:04X}:{ip:04X}"),
+            Stop::StrayTrap { number, cs, ip } => {
+                write!(f, "emulator trap {number:02X} outside the ROM at {cs:04X}:{ip:04X}")
+            }
             Stop::HaltedWithInterruptsOff { cs, ip } => write!(f, "HLT with interrupts disabled at {cs:04X}:{ip:04X}"),
             Stop::Exit(code) => write!(f, "program exited with code {code}"),
         }

@@ -12,11 +12,11 @@
 //! printers, serial ports, game port, DMA) read 0xFF and ignore writes, as an
 //! empty bus would, and are counted. Any other unknown port stops the machine.
 
+use crate::Stop;
 use crate::keyboard::KeyboardCtl;
 use crate::pic::Pic;
 use crate::pit::{MASTER_PER_PIT, Pit, SpeakerState};
 use crate::video::Video;
-use crate::Stop;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -117,11 +117,7 @@ impl Default for PcBus {
 impl cpu8086::Bus for PcBus {
     #[inline]
     fn read8(&mut self, addr: u32) -> u8 {
-        if (0xa0000..0xc0000).contains(&addr) {
-            self.video.mem_read(addr)
-        } else {
-            self.ram[addr as usize]
-        }
+        if (0xa0000..0xc0000).contains(&addr) { self.video.mem_read(addr) } else { self.ram[addr as usize] }
     }
 
     #[inline]

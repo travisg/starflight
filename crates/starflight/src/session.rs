@@ -27,16 +27,29 @@ use std::rc::Rc;
 #[derive(Clone, Debug, PartialEq)]
 pub enum KeyAction {
     /// Press and release a key (set-1 make code), holding Shift if asked.
-    Press { code: u8, shift: bool },
+    Press {
+        code: u8,
+        shift: bool,
+    },
     Wait(f64),
+    /// Hold a key for some milliseconds, with typematic repeats.
+    Hold {
+        code: u8,
+        ms: f64,
+    },
     /// Type the answer to the launch security check on screen.
     SecurityCode,
 }
 
+/// XT typematic timing: first repeat after 500 ms, then about 10 per second.
+const TYPEMATIC_DELAY_MS: f64 = 500.0;
+const TYPEMATIC_PERIOD_MS: f64 = 100.0;
+
 /// Parses a key script: plain characters, `{name}` for special keys
 /// (enter esc space tab bs up down left right home end pgup pgdn ins del
-/// f1-f10 kp0-kp9), `{wait MS}`, and `{code}` for the answer to the launch
-/// security check being shown.
+/// f1-f10 kp0-kp9), `{wait MS}`, `{hold KEY MS}` (held with typematic
+/// repeats), and `{code}` for the answer to the launch security check being
+/// shown.
 pub fn parse_keys(s: &str) -> Result<Vec<KeyAction>> {
     let mut out = Vec::new();
     let mut chars = s.chars();
@@ -59,31 +72,54 @@ pub fn parse_keys(s: &str) -> Result<Vec<KeyAction>> {
             out.push(KeyAction::SecurityCode);
             continue;
         }
-        let code = match lower.as_str() {
-            "enter" => 0x1c,
-            "esc" => 0x01,
-            "space" => 0x39,
-            "tab" => 0x0f,
-            "bs" => 0x0e,
-            "up" | "kp8" => 0x48,
-            "down" | "kp2" => 0x50,
-            "left" | "kp4" => 0x4b,
-            "right" | "kp6" => 0x4d,
-            "home" | "kp7" => 0x47,
-            "end" | "kp1" => 0x4f,
-            "pgup" | "kp9" => 0x49,
-            "pgdn" | "kp3" => 0x51,
-            "ins" | "kp0" => 0x52,
-            "del" => 0x53,
-            "kp5" => 0x4c,
-            f if f.starts_with('f') && f[1..].parse::<u8>().is_ok_and(|n| (1..=10).contains(&n)) => {
-                0x3a + f[1..].parse::<u8>().unwrap()
-            }
-            _ => bail!("unknown key {{{name}}}"),
+        if let Some(rest) = lower.strip_prefix("hold ") {
+            let mut parts = rest.split_whitespace();
+            let (Some(key), Some(ms), None) = (parts.next(), parts.next(), parts.next()) else {
+                bail!("expected {{hold KEY MS}}, got {{{name}}}");
+            };
+            let ms: f64 = ms.parse().with_context(|| format!("bad duration in {{{name}}}"))?;
+            let code = match key_code(key) {
+                Some(c) => c,
+                None => match key.chars().next().and_then(pc::keyboard::scan_for_char) {
+                    Some((c, false)) if key.chars().count() == 1 => c,
+                    _ => bail!("unknown key {key:?} in {{{name}}}"),
+                },
+            };
+            out.push(KeyAction::Hold { code, ms });
+            continue;
+        }
+        let Some(code) = key_code(&lower) else {
+            bail!("unknown key {{{name}}}");
         };
         out.push(KeyAction::Press { code, shift: false });
     }
     Ok(out)
+}
+
+/// Set-1 make code of a named key in a script.
+fn key_code(name: &str) -> Option<u8> {
+    Some(match name {
+        "enter" => 0x1c,
+        "esc" => 0x01,
+        "space" => 0x39,
+        "tab" => 0x0f,
+        "bs" => 0x0e,
+        "up" | "kp8" => 0x48,
+        "down" | "kp2" => 0x50,
+        "left" | "kp4" => 0x4b,
+        "right" | "kp6" => 0x4d,
+        "home" | "kp7" => 0x47,
+        "end" | "kp1" => 0x4f,
+        "pgup" | "kp9" => 0x49,
+        "pgdn" | "kp3" => 0x51,
+        "ins" | "kp0" => 0x52,
+        "del" => 0x53,
+        "kp5" => 0x4c,
+        f if f.starts_with('f') && f[1..].parse::<u8>().is_ok_and(|n| (1..=10).contains(&n)) => {
+            0x3a + f[1..].parse::<u8>().unwrap()
+        }
+        _ => return None,
+    })
 }
 
 /// A security challenge as shown on screen, and its answer.
@@ -178,7 +214,8 @@ impl Session {
         let backup = saves.load_state(slot, name, &mut self.machine)?;
         self.machine.set_speed(self.cpu_mhz);
         let stara = self.machine.dos.drive_dir.join("STARA.COM");
-        self.directory = directory::parse(&std::fs::read(&stara).with_context(|| format!("reading {}", stara.display()))?);
+        self.directory =
+            directory::parse(&std::fs::read(&stara).with_context(|| format!("reading {}", stara.display()))?);
         *self.recent.borrow_mut() = Recent::new(RECENT_WORDS);
         *self.challenge.borrow_mut() = None;
         self.last_text = None;
@@ -263,16 +300,37 @@ impl Session {
         self.run_ms(20.0)
     }
 
+    /// Holds a key down for `ms`, sending typematic repeats like an XT keyboard.
+    pub fn hold(&mut self, code: u8, ms: f64) -> Result<(), Stop> {
+        self.machine.key_code(code);
+        let mut t = TYPEMATIC_DELAY_MS.min(ms);
+        self.run_ms(t)?;
+        while t + TYPEMATIC_PERIOD_MS <= ms {
+            self.machine.key_code(code);
+            self.run_ms(TYPEMATIC_PERIOD_MS)?;
+            t += TYPEMATIC_PERIOD_MS;
+        }
+        self.run_ms(ms - t)?;
+        self.machine.key_code(code | 0x80);
+        self.run_ms(20.0)
+    }
+
     pub fn play_script(&mut self, script: &[KeyAction]) -> Result<(), Stop> {
         for a in script {
             match *a {
                 KeyAction::Press { code, shift } => self.press(code, shift)?,
                 KeyAction::Wait(ms) => self.run_ms(ms)?,
+                KeyAction::Hold { code, ms } => self.hold(code, ms)?,
                 KeyAction::SecurityCode => {
                     let Some(c) = self.security_challenge() else {
-                        return Err(Stop::Unsupported("{code} in a key script, but no security check is on screen".into()));
+                        return Err(Stop::Unsupported(
+                            "{code} in a key script, but no security check is on screen".into(),
+                        ));
                     };
-                    eprintln!("security check: {} / {} / {} -> {}", c.planet_name, c.artifact_name, c.race_name, c.code);
+                    eprintln!(
+                        "security check: {} / {} / {} -> {}",
+                        c.planet_name, c.artifact_name, c.race_name, c.code
+                    );
                     for ch in c.code.to_string().chars() {
                         let (code, shift) = pc::keyboard::scan_for_char(ch).expect("digits are typable");
                         self.press(code, shift)?;
@@ -307,7 +365,12 @@ impl Session {
         };
         match directory::record(&a, &b, e, rec as u16) {
             // The name field is 24 characters padded with periods (ART-NAM, -XTRAIL).
-            Some(r) => r[..24.min(r.len())].iter().map(|&c| c as char).collect::<String>().trim_end_matches(['.', ' ']).to_string(),
+            Some(r) => r[..24.min(r.len())]
+                .iter()
+                .map(|&c| c as char)
+                .collect::<String>()
+                .trim_end_matches(['.', ' '])
+                .to_string(),
             None => format!("artifact #{rec}"),
         }
     }
@@ -320,7 +383,9 @@ impl Session {
     /// File transfers so far, summarised by directory entry.
     pub fn file_summary(&self) -> String {
         let mut out = String::new();
-        let Some(log) = &self.machine.file_log else { return out };
+        let Some(log) = &self.machine.file_log else {
+            return out;
+        };
         for io in log {
             let fileno = match io.file.as_str() {
                 "STARA.COM" => 1,

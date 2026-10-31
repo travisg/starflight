@@ -147,11 +147,7 @@ const AUDIO_MAX_QUEUED: u32 = SAMPLE_RATE / 5 * 2; // 200 ms of i16 samples, in 
 pub fn run(mut s: Session, scale: u32, saves: &Saves, slot: &str) -> Result<()> {
     let sdl = sdl2::init().map_err(|e| anyhow!(e))?;
     let video = sdl.video().map_err(|e| anyhow!(e))?;
-    let window = video
-        .window("Starflight", 320 * scale, 240 * scale)
-        .position_centered()
-        .resizable()
-        .build()?;
+    let window = video.window("Starflight", 320 * scale, 240 * scale).position_centered().resizable().build()?;
     let mut canvas = window.into_canvas().present_vsync().build()?;
     let tc = canvas.texture_creator();
     let mut events = sdl.event_pump().map_err(|e| anyhow!(e))?;
@@ -179,7 +175,9 @@ pub fn run(mut s: Session, scale: u32, saves: &Saves, slot: &str) -> Result<()> 
         for e in events.poll_iter() {
             match e {
                 Event::Quit { .. } => break 'main,
-                Event::KeyDown { scancode: Some(Scancode::F11), keymod, repeat: false, .. } if keymod.intersects(CTRL) => {
+                Event::KeyDown { scancode: Some(Scancode::F11), keymod, repeat: false, .. }
+                    if keymod.intersects(CTRL) =>
+                {
                     let text = if let Some(stop) = &stopped {
                         eprintln!("not saving a state: the machine has stopped ({stop})");
                         "not saved: the machine has stopped".to_string()
@@ -197,7 +195,9 @@ pub fn run(mut s: Session, scale: u32, saves: &Saves, slot: &str) -> Result<()> 
                     };
                     message = Some((text, Instant::now()));
                 }
-                Event::KeyDown { scancode: Some(Scancode::F12), keymod, repeat: false, .. } if keymod.intersects(CTRL) => {
+                Event::KeyDown { scancode: Some(Scancode::F12), keymod, repeat: false, .. }
+                    if keymod.intersects(CTRL) =>
+                {
                     let text = match saves.states(slot).map(|v| v.into_iter().next_back()) {
                         Ok(Some(st)) => match s.load_state(saves, slot, &st.name, &held_modifiers(keymod)) {
                             Ok(backup) => {
@@ -230,7 +230,11 @@ pub fn run(mut s: Session, scale: u32, saves: &Saves, slot: &str) -> Result<()> 
                 }
                 Event::KeyDown { scancode: Some(Scancode::F11), repeat: false, .. } => {
                     let w = canvas.window_mut();
-                    let fs = if w.fullscreen_state() == FullscreenType::Off { FullscreenType::Desktop } else { FullscreenType::Off };
+                    let fs = if w.fullscreen_state() == FullscreenType::Off {
+                        FullscreenType::Desktop
+                    } else {
+                        FullscreenType::Off
+                    };
                     w.set_fullscreen(fs).map_err(|e| anyhow!(e))?;
                 }
                 Event::KeyDown { scancode: Some(Scancode::F12), repeat: false, .. } => turbo = !turbo,
@@ -304,7 +308,10 @@ pub fn run(mut s: Session, scale: u32, saves: &Saves, slot: &str) -> Result<()> 
             title = format!("{title} - {text}");
         }
         if let Some(c) = &security {
-            title = format!("{title} - security code for {} / {} / {}: {}", c.planet_name, c.artifact_name, c.race_name, c.code);
+            title = format!(
+                "{title} - security code for {} / {} / {}: {}",
+                c.planet_name, c.artifact_name, c.race_name, c.code
+            );
         }
         if canvas.window().title() != title {
             canvas.window_mut().set_title(&title)?;
@@ -316,7 +323,8 @@ pub fn run(mut s: Session, scale: u32, saves: &Saves, slot: &str) -> Result<()> 
             if frame.width > 0 && frame.height > 0 {
                 let fits = matches!(&texture, Some((_, w, h)) if *w == frame.width && *h == frame.height);
                 if !fits {
-                    let t = tc.create_texture_streaming(PixelFormatEnum::RGB888, frame.width as u32, frame.height as u32)?;
+                    let t =
+                        tc.create_texture_streaming(PixelFormatEnum::RGB888, frame.width as u32, frame.height as u32)?;
                     texture = Some((t, frame.width, frame.height));
                 }
                 let (t, w, _) = texture.as_mut().unwrap();
@@ -340,9 +348,6 @@ pub fn run(mut s: Session, scale: u32, saves: &Saves, slot: &str) -> Result<()> 
         }
         canvas.present();
     }
-    eprintln!(
-        "played {:.1}s of emulated time",
-        Machine::master_to_ms(s.machine.now()) / 1000.0
-    );
+    eprintln!("played {:.1}s of emulated time", Machine::master_to_ms(s.machine.now()) / 1000.0);
     Ok(())
 }

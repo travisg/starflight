@@ -178,7 +178,10 @@ impl Machine {
                 }
                 Step::Halted => {
                     if !self.cpu.flag(flags::IF) {
-                        return Some(Stop::HaltedWithInterruptsOff { cs: self.cpu.sregs[cpu8086::CS], ip: self.cpu.ip });
+                        return Some(Stop::HaltedWithInterruptsOff {
+                            cs: self.cpu.sregs[cpu8086::CS],
+                            ip: self.cpu.ip,
+                        });
                     }
                     self.idle(until);
                 }

@@ -155,7 +155,8 @@ starflight headless --trace-forth trace.txt --files
 starflight headless --keys '{wait 3000}5{enter}' --run-ms 60000 --shot-every 4000
 ```
 
-`{code}` types the answer to the launch security check (the code wheel) on
+`{hold KEY MS}` holds a key with XT typematic repeats (steering in flight
+needs held keys). `{code}` types the answer to the launch security check (the code wheel) on
 screen; the window shows the same answer in its title while the prompt is up.
 The game derives the code from the three wheel positions it shows, so the
 emulator reads them from memory and applies the game's own formula

@@ -301,7 +301,8 @@ fn cmd_headless(
     let result = s.play_script(&script).and_then(|_| match shots {
         None => s.run_ms(run_ms),
         Some((every, dir)) => {
-            std::fs::create_dir_all(dir).map_err(|e| pc::Stop::Unsupported(format!("creating {}: {e}", dir.display())))?;
+            std::fs::create_dir_all(dir)
+                .map_err(|e| pc::Stop::Unsupported(format!("creating {}: {e}", dir.display())))?;
             let mut done = 0.0;
             let mut n = 0;
             while done < run_ms {
@@ -330,7 +331,8 @@ fn cmd_headless(
     }
     if let Some(p) = dump_seg {
         let base = cpu8086::phys(s.game_cs, 0) as usize;
-        std::fs::write(p, &s.machine.bus.ram[base..base + 0x10000]).with_context(|| format!("writing {}", p.display()))?;
+        std::fs::write(p, &s.machine.bus.ram[base..base + 0x10000])
+            .with_context(|| format!("writing {}", p.display()))?;
         eprintln!("wrote the game segment ({:04X}:0000) to {}", s.game_cs, p.display());
     }
     if files {
@@ -463,7 +465,11 @@ fn main() -> Result<()> {
             trace_forth.as_deref(),
             files,
             dump_seg.as_deref(),
-            HeadlessStates { load: load_state.as_deref(), save: save_state.as_deref(), description: description.as_deref() },
+            HeadlessStates {
+                load: load_state.as_deref(),
+                save: save_state.as_deref(),
+                description: description.as_deref(),
+            },
         ),
         Cmd::Play { save, game_dir, mhz, scale, load_state } => {
             if load_state.is_some() {

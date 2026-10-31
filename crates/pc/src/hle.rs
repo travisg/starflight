@@ -10,7 +10,7 @@
 //! (IP, CS, FLAGS at SS:SP, +2, +4) and its ROM stub ends in IRET, so results
 //! returned in flags are written into the stacked FLAGS word.
 
-use cpu8086::{Cpu, SS, SP, phys};
+use cpu8086::{Cpu, SP, SS, phys};
 
 /// Outcome of a high-level (Rust) interrupt handler.
 #[derive(Clone, Debug, PartialEq, Eq)]
