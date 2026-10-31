@@ -11,7 +11,8 @@ use clap::{Parser, Subcommand};
 use sfforth::{consts, dict, directory};
 use std::path::{Path, PathBuf};
 
-const DEFAULT_GAME_DIR: &str = "/storage/games/starflt/START";
+/// The repo-local, gitignored copy of the original game files.
+const DEFAULT_GAME_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../game/START");
 
 #[derive(Parser)]
 #[command(name = "starflight", version, about = credits::BANNER)]

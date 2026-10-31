@@ -12,9 +12,10 @@ as optional, clearly separated fast paths.
 
 ## Ground rules
 
-- **Never write the original game files.** They live outside the repo
-  (default `/storage/games/starflt/START`) and are opened read-only. The game
-  writes only to working copies in a save directory.
+- **Never write the original game files.** The default copy is
+  `game/START/` (gitignored, read-only; copied from
+  `/storage/games/starflt/START`). They are opened read-only. The game writes
+  only to working copies in a save directory.
 - **Never commit game files or game-derived images** (`.gitignore` covers
   `*.COM`, saves, traces, screenshots).
 - **Credit prior work.** Any fact, address, table or technique taken from
@@ -33,7 +34,7 @@ as optional, clearly separated fast paths.
 ## Code map
 
 | Path | Contents |
-|---|---|
+| --- | --- |
 | `crates/cpu8086` | 8086 interpreter core. No dependencies. |
 | `crates/pc` | Machine: memory map, PIC, PIT, keyboard, speaker, CGA/EGA, BIOS and DOS HLE. No SDL. |
 | `crates/sfforth/src/consts.rs` | Fixed addresses in STARFLT.COM. |

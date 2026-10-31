@@ -58,8 +58,17 @@ cargo build --release
 ## Usage
 
 The original game files are only ever read, never written. By default they
-are taken from `/storage/games/starflt/START`; pass `--game-dir` to use
-another copy.
+are taken from `game/START/` in this repo, a gitignored local copy of an
+unplayed installation (STARA.COM, STARB.COM, STARFLT.COM, dated 1988-01-04).
+Create it once from your own copy of the game:
+
+```sh
+mkdir -p game/START
+cp -p /path/to/starflt/{STARA,STARB,STARFLT}.COM game/START/
+chmod a-w game/START/*.COM
+```
+
+Pass `--game-dir` to use another copy.
 
 ```sh
 starflight words      # every word in STARFLT.COM's dictionary, with its type
@@ -74,7 +83,7 @@ from, and the name. Truncated names show their declared length as `~N`.
 ## Layout
 
 | Path | What it is |
-|---|---|
+| --- | --- |
 | `crates/cpu8086` | Real-mode 8086 interpreter core (no dependencies). |
 | `crates/pc` | The PC/XT-class machine: devices, BIOS and DOS emulation. |
 | `crates/sfforth` | Starflight's Forth seen from outside: dictionary, directory, tracing. |

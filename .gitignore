@@ -4,7 +4,9 @@
 /traces/
 /screenshots/
 /out/
-# Never commit the game itself.
+# Never commit the game itself. game/START holds a local copy of the
+# original files (see README).
+/game/
 *.COM
 *.com
 *.EXE
