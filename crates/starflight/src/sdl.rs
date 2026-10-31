@@ -170,6 +170,7 @@ pub fn run(mut s: Session, scale: u32, saves: &Saves, slot: &str) -> Result<()> 
     // A state saved or loaded, shown in the title for a while.
     let mut message: Option<(String, Instant)> = None;
     let mut security: Option<crate::session::SecurityCheck> = None;
+    let mut security_reported: Option<u64> = None;
 
     'main: loop {
         for e in events.poll_iter() {
@@ -292,6 +293,15 @@ pub fn run(mut s: Session, scale: u32, saves: &Saves, slot: &str) -> Result<()> 
         if s.machine.frames % 30 == 0 || security.is_none() {
             security = s.recent_security_challenge(SECURITY_SHOWN_MS);
         }
+        if let Some(at) = s.security_shown_at().filter(|at| security_reported != Some(*at)) {
+            security_reported = Some(at);
+            if let Some(c) = s.security_challenge() {
+                eprintln!(
+                    "security check: {} / {} / {} -> code {}",
+                    c.planet_name, c.artifact_name, c.race_name, c.code
+                );
+            }
+        }
         let mut title = if paused {
             "Starflight (paused)".to_string()
         } else if let Some(stop) = &stopped {
@@ -308,10 +318,7 @@ pub fn run(mut s: Session, scale: u32, saves: &Saves, slot: &str) -> Result<()> 
             title = format!("{title} - {text}");
         }
         if let Some(c) = &security {
-            title = format!(
-                "{title} - security code for {} / {} / {}: {}",
-                c.planet_name, c.artifact_name, c.race_name, c.code
-            );
+            title = format!("{title} - code {} for {} / {} / {}", c.code, c.planet_name, c.artifact_name, c.race_name);
         }
         if canvas.window().title() != title {
             canvas.window_mut().set_title(&title)?;

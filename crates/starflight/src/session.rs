@@ -348,6 +348,11 @@ impl Session {
         Some(SecurityCheck { artifact_name: self.artifact_name(rec), ..c.into() })
     }
 
+    /// Master tick at which the most recent security check was shown.
+    pub fn security_shown_at(&self) -> Option<u64> {
+        self.challenge.borrow().as_ref().map(|(_, at)| *at)
+    }
+
     /// The security check shown within the last `ms` of emulated time.
     pub fn recent_security_challenge(&self, ms: f64) -> Option<SecurityCheck> {
         let at = self.challenge.borrow().as_ref()?.1;
