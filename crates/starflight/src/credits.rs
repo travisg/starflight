@@ -28,9 +28,14 @@ This emulator stands on the work of:
             Tandy detection detail, debugging-tool ideas.
             https://git.information-superhighway.net/SpindleyQ/starflightvm
   The anonymous migblog author - early reverse-engineering notes (archived by s-macke).
-  Daniel Balsom - SingleStepTests 8088, the hardware-generated CPU test suite.
-            https://github.com/SingleStepTests/8088
+  Daniel Balsom - SingleStepTests 8088, the hardware-generated CPU test suite,
+            and MartyPC, the model for the 8088 division microcode.
+            https://github.com/SingleStepTests/8088  https://github.com/dbalsom/martypc
+  Microsoft - the MS-DOS 4.0 source (MIT), the reference for FCB file I/O semantics.
+  Ralf Brown's Interrupt List; Howard Hinnant's civil-date algorithms.
   The DOSBox team - the reference emulator used for comparison.
+  Daniel Hepper, Marcel Sondaar and Joaquin Rosales - the public-domain 8x8 font
+            and the font8x8 crate used for text screens.
 
 See CREDITS.md for which facts come from where.
 ";

@@ -8,11 +8,13 @@
 //!
 //! The game runs unmodified on the emulated 8086; this crate only reads its
 //! memory: the dictionary in STARFLT.COM, the file directory shared by
-//! STARA.COM/STARB.COM, and (later) the threaded code being executed.
+//! STARA.COM/STARB.COM, and the threaded code as it runs.
 
 pub mod consts;
+pub mod decompile;
 pub mod dict;
 pub mod directory;
+pub mod trace;
 
 /// Little-endian 16-bit read from a 64 KiB segment image, wrapping like the 8086.
 pub fn rd16(seg: &[u8], addr: u16) -> u16 {

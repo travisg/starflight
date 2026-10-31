@@ -79,6 +79,54 @@ chmod a-w game/START/*.COM
 
 Pass `--game-dir` to use another copy.
 
+### Playing
+
+```sh
+starflight play                   # save slot "default", created from game/START
+starflight play --save mygame     # another slot
+starflight play --mhz 8           # emulated CPU speed (default 4.77, the IBM PC)
+```
+
+In the window: F11 toggles fullscreen, F12 toggles turbo, Pause pauses. The
+arrow keys, Home/End/PgUp/PgDn and the numeric keypad are the XT keypad.
+
+### Save slots
+
+The game rewrites STARA.COM and STARB.COM as it runs and when you SAVE GAME,
+just as it did on DOS. Each save slot is a directory under `saves/`
+(gitignored) holding working copies of the three files; the originals are
+never touched. `play` backs the slot up before every session, which replaces
+the game's REMEMBER/GOBACK batch files:
+
+```sh
+starflight new-save mygame --from game/START    # a new game
+starflight new-save old --from /path/to/PLAY    # continue an existing game
+starflight saves                                # list slots
+starflight saves mygame                         # list a slot's backups
+starflight restore mygame 20261030-231502       # put a backup back
+```
+
+### Without a window
+
+`headless` runs the game for a while with scripted keys and prints the text
+screen; it recreates its slot (`headless`) from the game directory each run
+unless `--keep` is given.
+
+```sh
+starflight headless --run-ms 8000 --text
+starflight headless --keys '1{wait 2000}{enter}' --screenshot out.png
+starflight headless --trace-forth trace.txt --files
+```
+
+Keys are typed one at a time, each after the game has taken the previous one
+(its keyboard handler drops buffered keys). `--trace-forth` writes every Forth
+word the game executes (return-stack pointer, code field address, name);
+`--files` lists the game's file transfers by directory entry. If the machine
+stops (an unknown opcode, port or DOS function), the report shows where, the
+registers and the most recent Forth words.
+
+### Tools
+
 ```sh
 starflight words      # every word in STARFLT.COM's dictionary, with its type
 starflight dir        # the STARA/STARB file directory (FILE# table)

@@ -4,19 +4,30 @@
 // license that can be found in the LICENSE file or at
 // https://opensource.org/licenses/MIT
 
+mod audio;
 mod credits;
+mod saves;
+mod sdl;
+mod session;
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
+use saves::Saves;
+use session::Session;
 use sfforth::{consts, dict, directory};
 use std::path::{Path, PathBuf};
 
 /// The repo-local, gitignored copy of the original game files.
 const DEFAULT_GAME_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../game/START");
+/// Save slots live in the repo's gitignored saves/ directory by default.
+const DEFAULT_SAVES_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../saves");
 
 #[derive(Parser)]
 #[command(name = "starflight", version, about = credits::BANNER)]
 struct Cli {
+    /// Directory holding save slots.
+    #[arg(long, global = true, default_value = DEFAULT_SAVES_DIR)]
+    saves_dir: PathBuf,
     #[command(subcommand)]
     cmd: Cmd,
 }
@@ -29,10 +40,75 @@ enum Cmd {
         #[arg(long, default_value = DEFAULT_GAME_DIR)]
         game_dir: PathBuf,
     },
+    /// List a colon definition's threaded code. WORD is a name or a hex CFA.
+    Decompile {
+        word: String,
+        #[arg(long, default_value = DEFAULT_GAME_DIR)]
+        game_dir: PathBuf,
+    },
     /// List the STARA/STARB file directory.
     Dir {
         #[arg(long, default_value = DEFAULT_GAME_DIR)]
         game_dir: PathBuf,
+    },
+    /// Create a save slot from a game directory (an unplayed copy, or a played one).
+    NewSave {
+        name: String,
+        #[arg(long, default_value = DEFAULT_GAME_DIR)]
+        from: PathBuf,
+        /// Overwrite an existing slot.
+        #[arg(long)]
+        replace: bool,
+    },
+    /// List save slots, or one slot's backups.
+    Saves { name: Option<String> },
+    /// Put one of a slot's backups back (the current files are backed up first).
+    Restore { name: String, backup: String },
+    /// Play in an SDL window. The save slot is created from the game directory
+    /// if it does not exist, and backed up before every session.
+    Play {
+        #[arg(long, default_value = "default")]
+        save: String,
+        #[arg(long, default_value = DEFAULT_GAME_DIR)]
+        game_dir: PathBuf,
+        /// Emulated CPU speed in MHz (F12 toggles turbo while playing).
+        #[arg(long, default_value_t = 4.77)]
+        mhz: f64,
+        /// Initial window size as a multiple of 320x240.
+        #[arg(long, default_value_t = 3)]
+        scale: u32,
+    },
+    /// Run the game without a window: scripted keys, text screen on stdout.
+    Headless {
+        /// Save slot to run; recreated from the game directory first unless --keep.
+        #[arg(long, default_value = "headless")]
+        save: String,
+        /// Use the slot as it is instead of recreating it.
+        #[arg(long)]
+        keep: bool,
+        #[arg(long, default_value = DEFAULT_GAME_DIR)]
+        game_dir: PathBuf,
+        /// Key script: characters, {enter} {esc} {space} {up} {f1}..., {wait MS}.
+        #[arg(long, default_value = "")]
+        keys: String,
+        /// Emulated time to run after the key script, in milliseconds.
+        #[arg(long, default_value_t = 5000.0)]
+        run_ms: f64,
+        /// Emulated CPU speed in MHz.
+        #[arg(long, default_value_t = 4.77)]
+        mhz: f64,
+        /// Print the text screen whenever it changes.
+        #[arg(long)]
+        text: bool,
+        /// Write a PNG of the final screen.
+        #[arg(long)]
+        screenshot: Option<PathBuf>,
+        /// Write every Forth word entered (return-stack pointer, CFA, name) to a file.
+        #[arg(long)]
+        trace_forth: Option<PathBuf>,
+        /// Print the game's file transfers at the end.
+        #[arg(long)]
+        files: bool,
     },
     /// Show who made the game and whose work this emulator builds on.
     Credits,
@@ -64,14 +140,7 @@ fn cmd_words(game_dir: &Path) -> Result<()> {
         if w.immediate() {
             name.push_str(" (immediate)");
         }
-        println!(
-            "{:04X}  {:<10} {:<3} {:<6} {}",
-            w.cfa,
-            w.kind.label(),
-            w.vocab,
-            w.provenance.label(),
-            name
-        );
+        println!("{:04X}  {:<10} {:<3} {:<6} {}", w.cfa, w.kind.label(), w.vocab, w.provenance.label(), name);
     }
     let count = |k: fn(&dict::Kind) -> bool| words.iter().filter(|w| k(&w.kind)).count();
     eprintln!(
@@ -83,6 +152,26 @@ fn cmd_words(game_dir: &Path) -> Result<()> {
         count(|k| *k == dict::Kind::Constant),
         count(|k| matches!(k, dict::Kind::Does(_))),
     );
+    Ok(())
+}
+
+fn cmd_decompile(game_dir: &Path, word: &str) -> Result<()> {
+    let com = read_game_file(game_dir, "STARFLT.COM")?;
+    let seg = sfforth::segment_image(&com);
+    let words = dict::decode_dictionary(&seg);
+    let names = sfforth::trace::Names::from_words(&words);
+    let cfa = match words.iter().find(|w| w.name.eq_ignore_ascii_case(word)) {
+        Some(w) => w.cfa,
+        None => u16::from_str_radix(word.trim_start_matches("0x"), 16)
+            .with_context(|| format!("no word named {word:?} (and not a hex CFA)"))?,
+    };
+    let Some(lines) = sfforth::decompile::decompile(&seg, cfa, &names, 4000) else {
+        bail!("{} at {cfa:04X} is not a colon definition", names.label(cfa));
+    };
+    println!(": {}  ( CFA {cfa:04X} )", names.label(cfa));
+    for l in lines {
+        println!("  {:04X}  {}", l.addr, l.text);
+    }
     Ok(())
 }
 
@@ -110,6 +199,94 @@ fn cmd_dir(game_dir: &Path) -> Result<()> {
     Ok(())
 }
 
+fn write_png(path: &Path, frame: &pc::video::Frame) -> Result<()> {
+    if frame.width == 0 || frame.height == 0 {
+        bail!("the video adapter produced no picture to save");
+    }
+    let file = std::fs::File::create(path).with_context(|| format!("creating {}", path.display()))?;
+    let mut enc = png::Encoder::new(std::io::BufWriter::new(file), frame.width as u32, frame.height as u32);
+    enc.set_color(png::ColorType::Rgb);
+    enc.set_depth(png::BitDepth::Eight);
+    let mut w = enc.write_header()?;
+    let data: Vec<u8> = frame.pixels.iter().flat_map(|p| [(p >> 16) as u8, (p >> 8) as u8, *p as u8]).collect();
+    w.write_image_data(&data)?;
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn cmd_headless(
+    saves: &Saves,
+    save: &str,
+    keep: bool,
+    game_dir: &Path,
+    keys: &str,
+    run_ms: f64,
+    mhz: f64,
+    text: bool,
+    screenshot: Option<&Path>,
+    trace_forth: Option<&Path>,
+    files: bool,
+) -> Result<()> {
+    let script = session::parse_keys(keys)?;
+    let slot = if keep {
+        if !saves.exists(save) {
+            bail!("no save {save:?}; create it with `starflight new-save {save}`");
+        }
+        saves.slot_dir(save)?
+    } else {
+        saves.create(save, game_dir, true)?
+    };
+    let trace: Option<Box<dyn std::io::Write>> = match trace_forth {
+        Some(p) => Some(Box::new(std::io::BufWriter::new(
+            std::fs::File::create(p).with_context(|| format!("creating {}", p.display()))?,
+        ))),
+        None => None,
+    };
+    eprintln!("{}", credits::BANNER);
+    let mut s = Session::new(&slot, mhz, trace)?;
+    s.show_text = text;
+    let result = s.play_script(&script).and_then(|_| s.run_ms(run_ms));
+    if !text {
+        if let Some(lines) = s.machine.bus.video.text_lines() {
+            let last = lines.iter().rposition(|l| !l.trim().is_empty()).map_or(0, |i| i + 1);
+            for l in &lines[..last] {
+                println!("{}", l.trim_end());
+            }
+        }
+    }
+    if files {
+        print!("{}", s.file_summary());
+    }
+    if let Some(p) = screenshot {
+        let mut frame = pc::video::Frame::default();
+        s.machine.render(&mut frame);
+        write_png(p, &frame)?;
+        eprintln!("wrote {} ({}x{})", p.display(), frame.width, frame.height);
+    }
+    let m = &s.machine;
+    eprintln!(
+        "ran {:.2}s emulated, {} instructions, {} frames",
+        pc::Machine::master_to_ms(m.now()) / 1000.0,
+        m.instructions,
+        m.frames
+    );
+    if !m.bus.absent_ports.is_empty() {
+        let ports: Vec<String> = m.bus.absent_ports.iter().map(|(p, n)| format!("{p:03X}x{n}")).collect();
+        eprintln!("absent-hardware port accesses: {}", ports.join(" "));
+    }
+    match result {
+        Ok(()) => Ok(()),
+        Err(pc::Stop::Exit(code)) => {
+            eprintln!("game exited to DOS (code {code})");
+            Ok(())
+        }
+        Err(stop) => {
+            eprint!("{}", s.report(&stop));
+            bail!("machine stopped: {stop}")
+        }
+    }
+}
+
 /// Lets `starflight words | head` end quietly instead of panicking on EPIPE.
 #[cfg(unix)]
 fn default_sigpipe() {
@@ -127,9 +304,58 @@ fn main() -> Result<()> {
     #[cfg(unix)]
     default_sigpipe();
     let cli = Cli::parse();
+    let saves = Saves::new(cli.saves_dir);
     match cli.cmd {
         Cmd::Words { game_dir } => cmd_words(&game_dir),
+        Cmd::Decompile { word, game_dir } => cmd_decompile(&game_dir, &word),
         Cmd::Dir { game_dir } => cmd_dir(&game_dir),
+        Cmd::NewSave { name, from, replace } => {
+            let dir = saves.create(&name, &from, replace)?;
+            println!("created save {name:?} in {} from {}", dir.display(), from.display());
+            Ok(())
+        }
+        Cmd::Saves { name: None } => {
+            for s in saves.list() {
+                println!("{s}");
+            }
+            Ok(())
+        }
+        Cmd::Saves { name: Some(name) } => {
+            for b in saves.backups(&name)? {
+                println!("{b}");
+            }
+            Ok(())
+        }
+        Cmd::Restore { name, backup } => {
+            saves.restore(&name, &backup)?;
+            println!("restored save {name:?} from backup {backup}");
+            Ok(())
+        }
+        Cmd::Headless { save, keep, game_dir, keys, run_ms, mhz, text, screenshot, trace_forth, files } => cmd_headless(
+            &saves,
+            &save,
+            keep,
+            &game_dir,
+            &keys,
+            run_ms,
+            mhz,
+            text,
+            screenshot.as_deref(),
+            trace_forth.as_deref(),
+            files,
+        ),
+        Cmd::Play { save, game_dir, mhz, scale } => {
+            if saves.exists(&save) {
+                let b = saves.backup(&save)?;
+                eprintln!("backed up save {save:?} to {}", b.display());
+            } else {
+                let dir = saves.create(&save, &game_dir, false)?;
+                eprintln!("created save {save:?} in {} from {}", dir.display(), game_dir.display());
+            }
+            eprintln!("{}", credits::BANNER);
+            let session = Session::new(&saves.slot_dir(&save)?, mhz, None)?;
+            sdl::run(session, scale)
+        }
         Cmd::Credits => {
             print!("{}", credits::CREDITS);
             Ok(())

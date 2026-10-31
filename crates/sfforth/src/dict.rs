@@ -93,7 +93,7 @@ impl Word {
 
     /// The name with control characters made visible (the null word is `\0`).
     pub fn display_name(&self) -> String {
-        self.name.escape_debug().to_string()
+        self.name.chars().map(|c| if c.is_control() { c.escape_debug().to_string() } else { c.to_string() }).collect()
     }
 }
 

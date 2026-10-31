@@ -22,7 +22,7 @@ pub const DOCOL: u16 = 0x224C;
 pub const DOVAR: u16 = 0x1D29;
 pub const DOCON: u16 = 0x2214;
 
-/// Code addresses of the threaded-code primitives the decompiler needs.
+/// Code addresses (code-field contents) of threaded-code primitives.
 pub const EXIT: u16 = 0x1692;
 pub const LIT: u16 = 0x175F;
 pub const TWOLIT: u16 = 0x1618;
@@ -34,3 +34,18 @@ pub const OPERATOR: u16 = 0x78C;
 
 /// Newest header of each vocabulary chain in STARFLT.COM (s-macke DICTLIST1-4).
 pub const VOCAB_HEADS: [u16; 4] = [0xD40F, 0xD480, 0xD449, 0xD46D];
+
+/// CFAs of words compiled with inline operands, as the decompiler meets them
+/// in threaded code. Names are from the dictionary except `(.")`, which is
+/// headerless (s-macke README, "Translation" table).
+pub mod cfa {
+    pub const LIT: u16 = 0x175D;
+    pub const TWOLIT: u16 = 0x1616;
+    pub const BRANCH: u16 = 0x1660;
+    pub const ZBRANCH: u16 = 0x15FA;
+    pub const LOOP: u16 = 0x15D0;
+    pub const PLUSLOOP: u16 = 0x155C;
+    pub const SLASHLOOP: u16 = 0x1591;
+    pub const EXIT: u16 = 0x1690;
+    pub const DOTQUOTE: u16 = 0x1BDC;
+}
