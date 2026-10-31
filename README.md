@@ -37,10 +37,11 @@ prints the same list.
 
 ## Status
 
-Milestone M0: the dictionary and directory tools work. The emulator does not
-run the game yet. The plan, in order:
+The dictionary and directory tools work, and the 8086 core passes all
+2,559,500 documented-instruction tests of the SingleStepTests 8088 suite. The
+emulator does not run the game yet. The plan, in order:
 
-1. M1: 8086 core, checked against SingleStepTests.
+1. M1 (done): 8086 core, checked against SingleStepTests.
 2. M2: machine, BIOS and DOS emulation; boots headless to the display menu.
 3. M3: SDL window, EGA graphics, keyboard and PC speaker; title screens.
 4. M4: playability across the game; SAVE GAME and resume.
@@ -53,6 +54,14 @@ libraries (`libsdl2-dev` on Debian/Ubuntu).
 
 ```sh
 cargo build --release
+cargo test
+```
+
+The CPU core's hardware test suite needs ~730 MB of test data:
+
+```sh
+scripts/fetch-sst.sh                        # downloads to /storage/scratch/claude/sst-8088
+cargo test --release -p cpu8086 --test sst  # set SST_8088_DIR if you put it elsewhere
 ```
 
 ## Usage

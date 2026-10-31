@@ -71,6 +71,15 @@ The hardware-generated per-opcode test suite, produced with Arduino8088 and
 MartyPC, that the CPU core is checked against. The test data is downloaded
 locally and not included in this repository.
 
+### Daniel Balsom: MartyPC
+
+<https://github.com/dbalsom/martypc> (MIT)
+
+The 8088 division microcode model (CORD, PREIDIV/POSTIDIV): the flags a
+divide error leaves on the stack, IDIV's REP-prefix negation, and the DAA/DAS
+high-digit threshold of 9Fh when AF is set. Reimplemented in
+`crates/cpu8086/src/alu.rs` (marked there); no code copied.
+
 ### The DOSBox team
 
 <https://www.dosbox.com/>

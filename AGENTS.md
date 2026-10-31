@@ -36,6 +36,7 @@ as optional, clearly separated fast paths.
 | Path | Contents |
 | --- | --- |
 | `crates/cpu8086` | 8086 interpreter core. No dependencies. |
+| `crates/cpu8086/tests/sst.rs` | SingleStepTests 8088 harness. |
 | `crates/pc` | Machine: memory map, PIC, PIT, keyboard, speaker, CGA/EGA, BIOS and DOS HLE. No SDL. |
 | `crates/sfforth/src/consts.rs` | Fixed addresses in STARFLT.COM. |
 | `crates/sfforth/src/dict.rs` | Dictionary header decoding. |
@@ -59,4 +60,11 @@ as optional, clearly separated fast paths.
 ```sh
 cargo test
 cargo run -p starflight -- words | head     # expect 1703 words on stderr summary
+scripts/fetch-sst.sh                        # once: SingleStepTests 8088 data (~730 MB)
+cargo test --release -p cpu8086 --test sst  # ~2.56M hardware tests, ~1 s
 ```
+
+The SST harness reads `SST_8088_DIR` (default
+`/storage/scratch/claude/sst-8088/v2`) and skips if the data is absent.
+`SST_FILTER=F6,D0.4` runs a subset; `SST_FAILS=path` saves failing test names.
+Every test with status "normal" in the suite's metadata must pass.
