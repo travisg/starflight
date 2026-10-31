@@ -60,9 +60,17 @@ cargo test
 The CPU core's hardware test suite needs ~730 MB of test data:
 
 ```sh
-scripts/fetch-sst.sh                        # downloads to /storage/scratch/claude/sst-8088
+scripts/fetch-sst.sh                        # downloads to target/sst-8088
 cargo test --release -p cpu8086 --test sst  # set SST_8088_DIR if you put it elsewhere
 ```
+
+## Getting the game
+
+This repository contains no part of Starflight. You need your own copy; it is
+sold today as Starflight 1+2 on [GOG](https://www.gog.com/game/starflight_1_2).
+The emulator knows one build: STARFLT.COM of 54183 bytes, dated 1988-01-04,
+whose addresses match Sebastian Macke's reverse engineering. Other builds are
+refused at start-up rather than run with wrong addresses.
 
 ## Usage
 

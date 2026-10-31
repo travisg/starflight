@@ -13,8 +13,8 @@ as optional, clearly separated fast paths.
 ## Ground rules
 
 - **Never write the original game files.** The default copy is
-  `game/START/` (gitignored, read-only; copied from
-  `/storage/games/starflt/START`). They are opened read-only. The game writes
+  `game/START/` (gitignored, read-only; copied from an unplayed
+  installation). They are opened read-only. The game writes
   only to working copies in a save directory.
 - **Never commit game files or game-derived images** (`.gitignore` covers
   `*.COM`, saves, traces, screenshots).
@@ -108,7 +108,7 @@ absent. They work on scratch copies under `$SF_TEST_DIR/snap-tests/`
 (default: the target dir's tmp dir for integration tests, the system temp
 dir for unit tests) and remove them when they pass.
 
-The SST harness reads `SST_8088_DIR` (default
-`/storage/scratch/claude/sst-8088/v2`) and skips if the data is absent.
+The SST harness reads `SST_8088_DIR` (default `target/sst-8088/v2`, where
+`scripts/fetch-sst.sh` downloads it) and skips if the data is absent.
 `SST_FILTER=F6,D0.4` runs a subset; `SST_FAILS=path` saves failing test names.
 Every test with status "normal" in the suite's metadata must pass.

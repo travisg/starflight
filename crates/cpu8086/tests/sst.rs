@@ -8,8 +8,9 @@
 //! https://github.com/SingleStepTests/8088) against the core.
 //!
 //! Only tests whose metadata status is "normal" run. The data directory is
-//! `SST_8088_DIR` (default /storage/scratch/claude/sst-8088/v2); if it is
-//! missing the test passes with a skip message.
+//! `SST_8088_DIR` (default `target/sst-8088/v2` in the workspace, where
+//! `scripts/fetch-sst.sh` puts it); if it is missing the test passes with a
+//! skip message.
 //!
 //! - `SST_FILTER=F6,D0.4` runs only files whose names start with one of the
 //!   comma-separated prefixes.
@@ -25,7 +26,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use cpu8086::{AX, BP, BX, Bus, CS, CX, Cpu, DI, DS, DX, ES, SI, SP, SS, Step};
 use serde::Deserialize;
 
-const DEFAULT_DIR: &str = "/storage/scratch/claude/sst-8088/v2";
+const DEFAULT_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../target/sst-8088/v2");
 const MAX_STEPS: usize = 0x20000;
 const SHOW_FAILS: usize = 3;
 

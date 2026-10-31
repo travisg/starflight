@@ -8,10 +8,11 @@
 # Downloads the SingleStepTests 8088 v2 suite (Daniel Balsom, MIT; ~730 MB)
 # used by `cargo test -p cpu8086 --test sst`.
 #
-# usage: scripts/fetch-sst.sh [DIR]    (default /storage/scratch/claude/sst-8088)
+# usage: scripts/fetch-sst.sh [DIR]    (default target/sst-8088 in the workspace,
+#                                      where the test looks for it)
 
 set -eu
-dir=${1:-/storage/scratch/claude/sst-8088}
+dir=${1:-$(dirname "$0")/../target/sst-8088}
 mkdir -p "$dir/v2"
 cd "$dir"
 curl -sfL "https://api.github.com/repos/SingleStepTests/8088/git/trees/main?recursive=1" |
