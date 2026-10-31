@@ -8,10 +8,13 @@
 //! a little-endian u32) and a bincode body holding the `Machine` as serde
 //! sees it.
 //!
+//! A restore checks the decoded machine (`Machine::check`) and refuses one
+//! that would divide by zero, overflow or stall: a snapshot is outside data.
+//!
 //! Fields marked `#[serde(skip)]` are host-side plumbing or diagnostics and
 //! are not in the body. A restore keeps the current machine's values for
-//! them: the hook, the file log, the DOS drive directory and logging switch,
-//! the absent-port counts, and speaker recording (on or off, emptied). Open
+//! them: the hook, the file log, the DOS drive directory, the absent-port
+//! counts, and speaker recording (on or off, emptied). Open
 //! host files are dropped; DOS reopens them by name. Any new machine state
 //! must be serialisable and not skipped, or it is lost on restore.
 
@@ -24,7 +27,7 @@ use std::io::{Read, Write};
 
 pub const MAGIC: &[u8; 6] = b"SFSNAP";
 /// Changes whenever the serialised types change.
-pub const VERSION: u32 = 1;
+pub const VERSION: u32 = 2;
 const HEADER_LEN: usize = MAGIC.len() + 4;
 /// Largest uncompressed snapshot accepted; real ones are about 1.4 MB.
 const MAX_LEN: u64 = 64 << 20;
@@ -68,10 +71,10 @@ impl Machine {
         if m.bus.ram.len() != RAM_LEN || !m.bus.video.sizes_ok() {
             return Err("corrupt snapshot: memory of the wrong size".to_string());
         }
+        m.check().map_err(|e| format!("corrupt snapshot: {e}"))?;
         m.hook = self.hook.take();
         m.file_log = self.file_log.take();
         m.dos.drive_dir = std::mem::take(&mut self.dos.drive_dir);
-        m.dos.log_io = self.dos.log_io;
         m.bus.absent_ports = std::mem::take(&mut self.bus.absent_ports);
         m.bus.speaker_log = self.bus.speaker_log.as_ref().map(|_| Vec::new());
         *self = m;

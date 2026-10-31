@@ -10,6 +10,9 @@
 //! and undefined encodings return [`Step::Invalid`] rather than guessing, so the
 //! machine can stop and report them.
 //!
+//! The trap flag is not acted on: POPF and IRET can set [`flags::TF`], but no
+//! single-step INT 1 follows. The machine stops when it sees TF set.
+//!
 //! There is no decode cache: every instruction is fetched from the bus.
 //! Starflight modifies its own code (its timer handler rewrites the immediate
 //! at 0x193, and the INTERRUPT word writes its INT number at 0x16C9).
@@ -89,7 +92,10 @@ pub enum Step {
     Halted,
     /// The emulator trap `FE F8 nn` ran; IP is past it.
     Trap { number: u8, cycles: u32 },
-    /// An opcode this core does not execute. IP is left at the instruction.
+    /// An opcode this core does not execute. CS:IP is left at the
+    /// instruction (prefixes included); `bytes` are its opcode and the byte
+    /// after it (the ModRM byte, if it has one), or the first two of a run of
+    /// more than 16 prefixes.
     Invalid { cs: u16, ip: u16, bytes: [u8; 2] },
 }
 

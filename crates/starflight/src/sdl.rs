@@ -14,11 +14,11 @@
 
 use crate::audio::{SAMPLE_RATE, Synth};
 use crate::saves::{Saves, SlotInconsistent};
-use crate::session::Session;
+use crate::session::{SECURITY_SHOWN_MS, Session};
 use anyhow::{Result, anyhow};
 use pc::{Machine, Stop};
 use sdl2::audio::{AudioQueue, AudioSpecDesired};
-use sdl2::event::Event;
+use sdl2::event::{Event, WindowEvent};
 use sdl2::keyboard::{Mod, Scancode};
 use sdl2::pixels::PixelFormatEnum;
 use sdl2::rect::Rect;
@@ -128,11 +128,14 @@ fn held_modifiers(m: Mod) -> Vec<u8> {
         .collect()
 }
 
-/// How long after the launch security prompt its answer stays in the title.
-const SECURITY_SHOWN_MS: f64 = 120_000.0;
-
 /// How long a state message stays in the window title.
 const MESSAGE_TIME: Duration = Duration::from_secs(4);
+
+/// Shortest pass of the main loop, so it does not spin when vsync does not
+/// block (software renderer, hidden window, vsync off). A little above 60 Hz,
+/// so a working 60 Hz vsync never waits on it. Emulated time follows the
+/// wall clock, so this does not change the game's speed.
+const MIN_FRAME_TIME: Duration = Duration::from_millis(16);
 
 /// Largest 4:3 rectangle centred in the window.
 fn fit_4_3(w: u32, h: u32) -> Rect {
@@ -167,6 +170,9 @@ pub fn run(mut s: Session, scale: u32, saves: &Saves, slot: &str) -> Result<()> 
     let mut paused = false;
     let mut stopped: Option<Stop> = None;
     let mut last = Instant::now();
+    let mut next_frame = last;
+    // Make codes sent to the guest without their break codes yet.
+    let mut down = [false; 0x80];
     // A state saved or loaded, shown in the title for a while.
     let mut message: Option<(String, Instant)> = None;
     let mut security: Option<crate::session::SecurityCheck> = None;
@@ -183,7 +189,7 @@ pub fn run(mut s: Session, scale: u32, saves: &Saves, slot: &str) -> Result<()> 
                         eprintln!("not saving a state: the machine has stopped ({stop})");
                         "not saved: the machine has stopped".to_string()
                     } else {
-                        match saves.save_state(slot, None, &s.machine, None) {
+                        match s.save_state(saves, slot, None, None) {
                             Ok(name) => {
                                 eprintln!("saved state {name:?} of save {slot:?}");
                                 format!("saved {name}")
@@ -211,6 +217,8 @@ pub fn run(mut s: Session, scale: u32, saves: &Saves, slot: &str) -> Result<()> 
                                 queue.clear();
                                 shown_frames = u64::MAX;
                                 stopped = None;
+                                security = s.recent_security_challenge(SECURITY_SHOWN_MS);
+                                security_reported = None;
                                 format!("loaded {}", st.name)
                             }
                             Err(e) if e.downcast_ref::<SlotInconsistent>().is_some() => return Err(e),
@@ -244,11 +252,20 @@ pub fn run(mut s: Session, scale: u32, saves: &Saves, slot: &str) -> Result<()> 
                 Event::KeyDown { scancode: Some(sc), .. } => {
                     if let Some(c) = xt_code(sc) {
                         s.machine.key_code(c);
+                        down[c as usize] = true;
                     }
                 }
                 Event::KeyUp { scancode: Some(sc), .. } => {
                     if let Some(c) = xt_code(sc) {
                         s.machine.key_code(c | 0x80);
+                        down[c as usize] = false;
+                    }
+                }
+                // Keys released while another window has focus send no KeyUp here.
+                Event::Window { win_event: WindowEvent::FocusLost, .. } => {
+                    for (c, d) in down.iter_mut().enumerate().filter(|(_, d)| **d) {
+                        s.machine.key_code(c as u8 | 0x80);
+                        *d = false;
                     }
                 }
                 _ => {}
@@ -285,6 +302,8 @@ pub fn run(mut s: Session, scale: u32, saves: &Saves, slot: &str) -> Result<()> 
                 }
                 eprint!("{}", s.report(&stop));
                 stopped = Some(stop);
+                // Show what was drawn since the last complete frame.
+                shown_frames = u64::MAX;
             }
         } else if paused {
             synth.skip_to(s.machine.now(), s.machine.bus.speaker_state());
@@ -341,7 +360,8 @@ pub fn run(mut s: Session, scale: u32, saves: &Saves, slot: &str) -> Result<()> 
                     for (y, row) in frame.pixels.chunks(w).enumerate() {
                         let line = &mut buf[y * pitch..y * pitch + w * 4];
                         for (dst, p) in line.as_chunks_mut::<4>().0.iter_mut().zip(row) {
-                            dst.copy_from_slice(&p.to_le_bytes());
+                            // RGB888 is a native-endian 0x00RRGGBB word.
+                            dst.copy_from_slice(&p.to_ne_bytes());
                         }
                     }
                 })
@@ -355,6 +375,14 @@ pub fn run(mut s: Session, scale: u32, saves: &Saves, slot: &str) -> Result<()> 
             canvas.copy(t, None, Some(fit_4_3(w, h))).map_err(|e| anyhow!(e))?;
         }
         canvas.present();
+
+        next_frame += MIN_FRAME_TIME;
+        let now = Instant::now();
+        if next_frame > now {
+            std::thread::sleep(next_frame - now);
+        } else {
+            next_frame = now;
+        }
     }
     eprintln!("played {:.1}s of emulated time", Machine::master_to_ms(s.machine.now()) / 1000.0);
     Ok(())

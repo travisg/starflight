@@ -11,19 +11,19 @@
 //! - The drive directory is a save slot holding working copies of the game
 //!   files; the game reads and writes them there. It is never the original
 //!   game directory (the caller guarantees that).
-//! - `int21` reads registers from `cpu`, accesses memory through `ram` (the
-//!   1 MiB physical address space), writes results back to `cpu`, and reports
-//!   carry-flag results through `hle::set_stacked_flag`.
-//! - Unknown functions return `Hle::Unsupported` with AH/AL in the message.
+//! - `int21` reads registers from `cpu`, accesses memory through `mem`
+//!   (`hle::Mem`: transfers into display memory reach the adapter; reading
+//!   display memory or writing the ROMs is refused, and the caller stops the
+//!   machine), writes results back to `cpu`, and reports carry-flag results
+//!   through `hle::set_stacked_flag`.
+//! - Unknown functions return `Hle::Unsupported` with AH/AL in the message,
+//!   as does writing a file from display memory (AH=22h).
 //!
 //! Implemented: the functions the game calls (0D 0F 10 11 19 1A 21 22 29 4A;
 //! s-macke starflight-reverse src/emul/call.c), plus 00/4C exit, 02/09
 //! console output, 25/35 vectors and 30 version. FCB behaviour follows the
 //! MS-DOS 4.0 kernel source (github.com/microsoft/MS-DOS, MIT), which kept
 //! the DOS 3.3 FCB code.
-//!
-//! DTA transfers write `ram` directly; the caller routes the `io_log`
-//! ranges that land in video memory through the adapter.
 
 mod clock;
 mod fcb;
@@ -31,7 +31,7 @@ mod host;
 #[cfg(test)]
 mod tests;
 
-use crate::hle::{Hle, rd8, rd16, set_stacked_flag, wr8, wr16};
+use crate::hle::{Hle, Mem, rd8, set_stacked_flag, wr8, wr16};
 use cpu8086::{AX, BP, BX, CS, CX, Cpu, DI, DS, DX, ES, SI, SP, SS, flags, phys};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -70,7 +70,8 @@ const DEFAULT_DRIVE: u8 = 2;
 pub struct Dos {
     #[serde(skip)]
     pub drive_dir: PathBuf,
-    /// When set, file transfers are appended to `io_log`.
+    /// When set, file transfers are appended to `io_log`. The machine sets
+    /// it while it keeps a file log.
     #[serde(skip)]
     pub log_io: bool,
     /// Emptied by the machine after every INT 21h.
@@ -184,7 +185,7 @@ impl Dos {
         self.dta = (psp_seg, 0x80);
     }
 
-    pub fn int21(&mut self, cpu: &mut Cpu, ram: &mut [u8]) -> Hle {
+    pub fn int21(&mut self, cpu: &mut Cpu, mem: &mut Mem) -> Hle {
         let (ah, al) = (cpu.reg8(AH), cpu.reg8(AL));
         let fcb_result = match ah {
             0x00 => return Hle::Exit(0),
@@ -198,8 +199,8 @@ impl Dos {
             0x09 => {
                 let (seg, off) = (cpu.sregs[DS], cpu.regs[DX]);
                 for i in 0..=0xffffu16 {
-                    let c = rd8(ram, phys(seg, off.wrapping_add(i)));
-                    if c == b'$' {
+                    let c = mem.rd8(phys(seg, off.wrapping_add(i)));
+                    if c == b'$' || mem.refused() {
                         break;
                     }
                     self.console.push(c);
@@ -209,32 +210,32 @@ impl Dos {
             }
             // Disk reset: writes already reached the host files.
             0x0d => return Hle::Done,
-            0x0f => self.fcb_open(cpu, ram),
-            0x10 => self.fcb_close(cpu, ram),
-            0x11 => self.fcb_find_first(cpu, ram),
+            0x0f => self.fcb_open(cpu, mem),
+            0x10 => self.fcb_close(cpu, mem),
+            0x11 => self.fcb_find_first(cpu, mem),
             0x19 => Ok(DEFAULT_DRIVE),
             0x1a => {
                 self.dta = (cpu.sregs[DS], cpu.regs[DX]);
                 return Hle::Done;
             }
-            0x21 => self.fcb_random(cpu, ram, false),
-            0x22 => self.fcb_random(cpu, ram, true),
+            0x21 => self.fcb_random(cpu, mem, false),
+            0x22 => self.fcb_random(cpu, mem, true),
             0x25 => {
                 let v = al as u32 * 4;
-                wr16(ram, v, cpu.regs[DX]);
-                wr16(ram, v + 2, cpu.sregs[DS]);
+                mem.wr16(v, cpu.regs[DX]);
+                mem.wr16(v + 2, cpu.sregs[DS]);
                 return Hle::Done;
             }
             0x29 => {
                 let (es, di) = (cpu.sregs[ES], cpu.regs[DI]);
                 let mut f = [0u8; 16];
                 for (i, b) in f.iter_mut().enumerate() {
-                    *b = rd8(ram, phys(es, di.wrapping_add(i as u16)));
+                    *b = mem.rd8(phys(es, di.wrapping_add(i as u16)));
                 }
                 let ds = cpu.sregs[DS];
-                let (r, si) = fcb::parse_name(|o| rd8(ram, phys(ds, o)), cpu.regs[SI], &mut f, al);
+                let (r, si) = fcb::parse_name(|o| mem.rd8(phys(ds, o)), cpu.regs[SI], &mut f, al);
                 for (i, &b) in f.iter().enumerate() {
-                    wr8(ram, phys(es, di.wrapping_add(i as u16)), b);
+                    mem.wr8(phys(es, di.wrapping_add(i as u16)), b);
                 }
                 cpu.regs[SI] = si;
                 Ok(r)
@@ -248,11 +249,11 @@ impl Dos {
             }
             0x35 => {
                 let v = al as u32 * 4;
-                cpu.regs[BX] = rd16(ram, v);
-                cpu.sregs[ES] = rd16(ram, v + 2);
+                cpu.regs[BX] = mem.rd16(v);
+                cpu.sregs[ES] = mem.rd16(v + 2);
                 return Hle::Done;
             }
-            0x4a => return resize(cpu, ram),
+            0x4a => return resize(cpu, mem),
             0x4c => return Hle::Exit(al),
             _ => return Hle::Unsupported(format!("INT 21h AH={ah:02X} AL={al:02X}")),
         };
@@ -268,16 +269,16 @@ impl Dos {
 
 /// 4Ah. The program owns everything up to A000, so a block at ES may grow to
 /// there; AX=ES on success, as $SETBLOCK returns.
-fn resize(cpu: &mut Cpu, ram: &mut [u8]) -> Hle {
+fn resize(cpu: &mut Cpu, mem: &mut Mem) -> Hle {
     let (es, bx) = (cpu.sregs[ES], cpu.regs[BX]);
     let max = MEM_TOP.saturating_sub(es);
     if bx <= max {
         cpu.regs[AX] = es;
-        set_stacked_flag(cpu, ram, flags::CF, false);
+        set_stacked_flag(cpu, mem, flags::CF, false);
     } else {
         cpu.regs[AX] = 8; // insufficient memory
         cpu.regs[BX] = max;
-        set_stacked_flag(cpu, ram, flags::CF, true);
+        set_stacked_flag(cpu, mem, flags::CF, true);
     }
     Hle::Done
 }

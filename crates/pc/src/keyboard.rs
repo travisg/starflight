@@ -80,6 +80,15 @@ pub mod shift {
     pub const INSERT: u8 = 0x80;
 }
 
+/// BDA keyboard flag bits at 0040:0018: toggle keys held down. A toggle key
+/// changes state on its first make code only, not on typematic repeats.
+pub mod held {
+    pub const SCROLL: u8 = 0x10;
+    pub const NUM: u8 = 0x20;
+    pub const CAPS: u8 = 0x40;
+    pub const INSERT: u8 = 0x80;
+}
+
 /// Unshifted and shifted ASCII for scan codes 00h-39h (0 = none).
 const MAIN: [(u8, u8); 0x3a] = [
     (0, 0),
@@ -153,9 +162,15 @@ pub enum KeyEvent {
     None,
 }
 
-/// Translates one set-1 scan code like the XT BIOS INT 9 handler, updating
-/// the shift flags at 0040:0017.
+/// `translate_held` without the held-key bits: every make code of a toggle
+/// key toggles it. Enough to follow Shift, Ctrl and Alt.
 pub fn translate(code: u8, flags: &mut u8) -> KeyEvent {
+    translate_held(code, flags, &mut 0)
+}
+
+/// Translates one set-1 scan code like the XT BIOS INT 9 handler, updating
+/// the shift flags at 0040:0017 and the held toggle keys at 0040:0018.
+pub fn translate_held(code: u8, flags: &mut u8, held: &mut u8) -> KeyEvent {
     use shift::*;
     let release = code & 0x80 != 0;
     let scan = code & 0x7f;
@@ -174,17 +189,23 @@ pub fn translate(code: u8, flags: &mut u8) -> KeyEvent {
         }
         return KeyEvent::None;
     }
-    if release {
-        return KeyEvent::None;
-    }
     let toggle = match scan {
-        0x3a => Some(CAPS),
-        0x45 => Some(NUM),
-        0x46 => Some(SCROLL),
+        0x3a => Some((CAPS, held::CAPS)),
+        0x45 => Some((NUM, held::NUM)),
+        0x46 => Some((SCROLL, held::SCROLL)),
         _ => None,
     };
-    if let Some(t) = toggle {
-        *flags ^= t;
+    if release {
+        // Insert (keypad 0) is held-tracked too; see the keypad below.
+        let h = if scan == 0x52 { held::INSERT } else { toggle.map_or(0, |(_, h)| h) };
+        *held &= !h;
+        return KeyEvent::None;
+    }
+    if let Some((t, h)) = toggle {
+        if *held & h == 0 {
+            *held |= h;
+            *flags ^= t;
+        }
         return KeyEvent::None;
     }
     let shifted = *flags & (LSHIFT | RSHIFT) != 0;
@@ -233,6 +254,10 @@ pub fn translate(code: u8, flags: &mut u8) -> KeyEvent {
         return match scan {
             0x4c => KeyEvent::None,
             0x52 => {
+                if *held & held::INSERT != 0 {
+                    return KeyEvent::None;
+                }
+                *held |= held::INSERT;
                 *flags ^= INSERT;
                 ext(0x52)
             }
@@ -308,6 +333,33 @@ mod tests {
         assert_eq!(f, 0);
         translate(0x3a, &mut f);
         assert_eq!(translate(0x1e, &mut f), KeyEvent::Key(0x1e41));
+    }
+
+    #[test]
+    fn toggle_keys_ignore_typematic_repeats() {
+        let (mut f, mut h) = (0, 0);
+        // Caps Lock held: make, two repeats, break; then pressed again.
+        for code in [0x3a, 0x3a, 0x3a] {
+            translate_held(code, &mut f, &mut h);
+        }
+        assert_eq!((f, h), (shift::CAPS, held::CAPS));
+        translate_held(0xba, &mut f, &mut h);
+        assert_eq!((f, h), (shift::CAPS, 0));
+        translate_held(0x3a, &mut f, &mut h);
+        translate_held(0xba, &mut f, &mut h);
+        assert_eq!((f, h), (0, 0));
+        // Insert gives one key and one toggle per press.
+        assert_eq!(translate_held(0x52, &mut f, &mut h), KeyEvent::Key(0x5200));
+        assert_eq!(translate_held(0x52, &mut f, &mut h), KeyEvent::None);
+        assert_eq!((f, h), (shift::INSERT, held::INSERT));
+        translate_held(0xd2, &mut f, &mut h);
+        assert_eq!(translate_held(0x52, &mut f, &mut h), KeyEvent::Key(0x5200));
+        assert_eq!(f, 0);
+        // Without the held bits, every make toggles.
+        let mut f = 0;
+        translate(0x45, &mut f);
+        translate(0x45, &mut f);
+        assert_eq!(f, 0);
     }
 
     #[test]

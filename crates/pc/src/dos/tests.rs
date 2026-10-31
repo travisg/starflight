@@ -7,6 +7,8 @@
 use super::clock::{self, LocalTime};
 use super::fcb::{self, CUR_BLOCK, CUR_REC, DATE, DRIVE, DRIVE_C, FEOF, FILE_SIZE, FTRIM, RAND_REC, REC_SIZE, TIME};
 use super::*;
+use crate::hle::rd16;
+use crate::video::Video;
 use std::fs;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -22,6 +24,7 @@ struct Rig {
     dos: Dos,
     cpu: Cpu,
     ram: Vec<u8>,
+    video: Video,
     dir: PathBuf,
 }
 
@@ -42,16 +45,19 @@ impl Rig {
         let mut dos = Dos::new(dir.clone());
         dos.log_io = true;
         dos.dta = (DTA_SEG, 0);
-        Rig { dos, cpu, ram, dir }
+        Rig { dos, cpu, ram, video: Video::new(), dir }
     }
 
     fn file(&self, name: &str, data: &[u8]) {
         fs::write(self.dir.join(name), data).unwrap();
     }
 
+    /// Calls INT 21h; a refused memory access gives `Hle::Unsupported`.
     fn call(&mut self, ax: u16) -> Hle {
         self.cpu.regs[AX] = ax;
-        self.dos.int21(&mut self.cpu, &mut self.ram)
+        let mut mem = Mem::new(&mut self.ram, &mut self.video);
+        let r = self.dos.int21(&mut self.cpu, &mut mem);
+        mem.into_fault().map_or(r, Hle::Unsupported)
     }
 
     /// Calls a function that answers in AL and returns AL.
@@ -356,6 +362,44 @@ fn dos_random_read() {
             ("STARA.COM", 3072, 0, false, dta),
         ]
     );
+}
+
+#[test]
+fn dos_display_memory_and_roms() {
+    let mut r = Rig::new("display");
+    r.dos.log_io = false;
+    let data = pattern(256);
+    r.file("STARA.COM", &data);
+    r.open("STARA.COM", 128);
+    // A read into display memory reaches the adapter (text mode: B8000).
+    r.dos.dta = (0xb800, 0x0010);
+    assert_eq!(r.read(1), 0);
+    let shown: Vec<u8> = (0..128).map(|i| r.video.mem_read(0xb8010 + i)).collect();
+    assert_eq!(shown, &data[128..]);
+    assert!(r.ram[0xb8000..0xb8100].iter().all(|&b| b == 0));
+    // Writing a file from display memory stops, and the file is untouched.
+    let err = r.call(0x2200);
+    assert!(matches!(&err, Hle::Unsupported(m) if m.contains("AH=22h") && m.contains("B8010")), "{err:?}");
+    assert_eq!(fs::read(r.dir.join("STARA.COM")).unwrap(), data);
+    // A read into the ROMs stops, and they keep their bytes.
+    r.dos.dta = (0xf000, 0xff80);
+    r.ram[0xfff80..].fill(0xcc);
+    let err = r.call(0x2100);
+    assert!(matches!(&err, Hle::Unsupported(m) if m.contains("ROM area at FFF80")), "{err:?}");
+    assert!(r.ram[0xfff80..].iter().all(|&b| b == 0xcc));
+    // So does an FCB function whose FCB sits there.
+    r.cpu.sregs[DS] = 0xc000;
+    r.cpu.regs[DX] = 0x0100;
+    r.ram[0xc0100..0xc010c].copy_from_slice(b"\0STARA   COM");
+    let err = r.call(0x0f00);
+    assert!(matches!(&err, Hle::Unsupported(m) if m.contains("ROM area at C0100")), "{err:?}");
+    assert_eq!(r.ram[0xc0100], 0);
+    // And a string in display memory.
+    r.cpu.sregs[DS] = 0xb800;
+    r.cpu.regs[DX] = 0;
+    let err = r.call(0x0900);
+    assert!(matches!(&err, Hle::Unsupported(m) if m.contains("display memory at B8000")), "{err:?}");
+    assert!(r.dos.console.is_empty());
 }
 
 #[test]

@@ -22,7 +22,7 @@ This emulator stands on the work of:
   Tim Lee - published partial source code and design documents in the early 2000s
             (preserved in starflight-reverse/webarchive).
   Sebastian Macke - starflight-reverse: disassembly, Forth-to-C transpiler, word names,
-            data formats, code addresses, DOS interrupt usage, interpreter-enable patch.
+            data formats, code addresses, DOS interrupt usage.
             https://github.com/s-macke/starflight-reverse
   Jeremy Penner (SpindleyQ) - StarflightVM: boot and interrupt-handler analysis,
             Tandy detection detail, debugging-tool ideas.
@@ -33,9 +33,14 @@ This emulator stands on the work of:
             https://github.com/SingleStepTests/8088  https://github.com/dbalsom/martypc
   Microsoft - the MS-DOS 4.0 source (MIT), the reference for FCB file I/O semantics.
   Ralf Brown's Interrupt List; Howard Hinnant's civil-date algorithms.
+  IBM - the EGA Technical Reference, for the BIOS mode register values.
+  Intel - the 8253 data sheet, for the timer's gate behaviour.
   The DOSBox team - the reference emulator used for comparison.
   Daniel Hepper, Marcel Sondaar and Joaquin Rosales - the public-domain 8x8 font
             and the font8x8 crate used for text screens.
+  STARCODE.EXE, an anonymous code-wheel program - the cross-check for the
+            security-check tables.
+  This repository's author's 2002 directory scanner - the STARA/STARB layout.
 
 See CREDITS.md for which facts come from where.
 ";

@@ -25,7 +25,9 @@ as optional, clearly separated fast paths.
   use their facts, never copy their code or tables.
 - **Fail loudly.** An unknown opcode, interrupt function or I/O port stops the
   machine with a report (what it was, the x86 registers, the recent Forth
-  words). Do not stub things silently to get further.
+  words). Do not stub things silently to get further. Ports of hardware such
+  a PC may lack (MDA/Hercules, CGA-only registers, serial, parallel) read
+  FFh and are counted in `absent_ports`, listed at the end of a run.
 - Every source file starts with the MIT copyright header used in the existing
   files.
 - Update README.md in the same commit as any change to behaviour, commands or
@@ -45,7 +47,7 @@ as optional, clearly separated fast paths.
 | `crates/pc/src/dos/` | COM loader and INT 21h FCB file I/O over a save-slot directory. |
 | `crates/pc/src/video/` | EGA: planes and latches, text and mode 0Dh rendering, INT 10h. |
 | `crates/pc/src/{pic,pit,keyboard}.rs` | 8259, 8253 (+ speaker state), XT keyboard and scan-code translation. |
-| `crates/pc/src/hle.rs` | Helpers for trap handlers; BDA addresses. |
+| `crates/pc/src/hle.rs` | Helpers for trap handlers (`Mem`: guest memory at program-chosen addresses); BDA addresses. |
 | `crates/sfforth/src/consts.rs` | Fixed addresses in STARFLT.COM. |
 | `crates/sfforth/src/dict.rs` | Dictionary header decoding. |
 | `crates/sfforth/src/directory.rs` | STARA/STARB directory parsing. |
@@ -92,6 +94,14 @@ as optional, clearly separated fast paths.
 - A state's STARA/STARB copies keep their modification times: DOS puts file
   times into FCBs in guest memory, so a restore must see the times the
   machine saw.
+- Trap handlers reach addresses the program chose (FCBs, the DTA, buffers,
+  the caller's stack) through `hle::Mem`, never the raw RAM array: display
+  memory must go through the adapter, and the ROM area holds the trap stubs.
+- Change a PIT gate with `Pit::set_gate`, not the `gate` field: edges
+  restart or suspend counting.
+- Save states through `Session::save_state`, not `Saves::save_state`
+  directly: the launch security check lives in the session, not the
+  machine, and only the session's call stores it in `info.txt`.
 
 ## How to test
 

@@ -17,7 +17,7 @@ pub mod pit;
 pub mod snapshot;
 pub mod video;
 
-pub use machine::{Config, Machine};
+pub use machine::{Config, MAX_CPU_MHZ, MIN_CPU_MHZ, Machine};
 
 use std::fmt;
 

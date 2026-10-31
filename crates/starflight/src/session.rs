@@ -45,6 +45,21 @@ pub enum KeyAction {
 const TYPEMATIC_DELAY_MS: f64 = 500.0;
 const TYPEMATIC_PERIOD_MS: f64 = 100.0;
 
+/// Longest emulated time a key script step or a run may ask for: 24 hours.
+pub const MAX_MS: f64 = 86_400_000.0;
+
+/// How long after the launch security prompt was shown its answer counts as
+/// on screen: shown while playing, and kept by a state saved meanwhile.
+pub const SECURITY_SHOWN_MS: f64 = 120_000.0;
+
+/// A duration in a key script tag: 0 to `MAX_MS` milliseconds.
+fn script_ms(v: &str, tag: &str) -> Result<f64> {
+    match v.trim().parse::<f64>() {
+        Ok(ms) if (0.0..=MAX_MS).contains(&ms) => Ok(ms),
+        _ => bail!("bad duration {:?} in {{{tag}}}: expected 0 to {MAX_MS} ms", v.trim()),
+    }
+}
+
 /// Parses a key script: plain characters, `{name}` for special keys
 /// (enter esc space tab bs up down left right home end pgup pgdn ins del
 /// f1-f10 kp0-kp9), `{wait MS}`, `{hold KEY MS}` (held with typematic
@@ -61,11 +76,21 @@ pub fn parse_keys(s: &str) -> Result<Vec<KeyAction>> {
             out.push(KeyAction::Press { code, shift });
             continue;
         }
-        let name: String = chars.by_ref().take_while(|&c| c != '}').collect();
+        let mut name = String::new();
+        let mut closed = false;
+        for c in chars.by_ref() {
+            if c == '}' {
+                closed = true;
+                break;
+            }
+            name.push(c);
+        }
+        if !closed {
+            bail!("unclosed {{{name} in key script (no closing }})");
+        }
         let lower = name.to_ascii_lowercase();
         if let Some(ms) = lower.strip_prefix("wait") {
-            let ms: f64 = ms.trim().parse().with_context(|| format!("bad wait in {{{name}}}"))?;
-            out.push(KeyAction::Wait(ms));
+            out.push(KeyAction::Wait(script_ms(ms, &name)?));
             continue;
         }
         if lower == "code" {
@@ -77,7 +102,7 @@ pub fn parse_keys(s: &str) -> Result<Vec<KeyAction>> {
             let (Some(key), Some(ms), None) = (parts.next(), parts.next(), parts.next()) else {
                 bail!("expected {{hold KEY MS}}, got {{{name}}}");
             };
-            let ms: f64 = ms.parse().with_context(|| format!("bad duration in {{{name}}}"))?;
+            let ms = script_ms(ms, &name)?;
             let code = match key_code(key) {
                 Some(c) => c,
                 None => match key.chars().next().and_then(pc::keyboard::scan_for_char) {
@@ -139,7 +164,8 @@ impl From<security::Challenge> for SecurityCheck {
 
 pub struct Session {
     /// The last launch security challenge printed, captured while STP-OV was
-    /// resident, with the master tick it was printed at.
+    /// resident (or kept by the state loaded), with the master tick it was
+    /// printed at.
     challenge: Rc<RefCell<Option<(security::Challenge, u64)>>>,
     pub machine: Machine,
     pub names: Rc<Names>,
@@ -168,7 +194,6 @@ impl Session {
         let cfg = Config { cpu_mhz, ..Default::default() };
         let game_cs = cfg.psp_seg;
         let mut machine = Machine::new(&cfg, slot_dir.to_path_buf(), &com);
-        machine.file_log = Some(Vec::new());
         let names = Rc::new(Names::from_words(&dict::decode_dictionary(&segment_image(&com))));
         let recent = Rc::new(RefCell::new(Recent::new(RECENT_WORDS)));
         let (r, n) = (recent.clone(), names.clone());
@@ -206,18 +231,34 @@ impl Session {
         })
     }
 
+    /// Saves the machine as state `name` (or a quick state) of save `slot`
+    /// (see `Saves::save_state`), with the security check if it is on
+    /// screen. Returns the name.
+    pub fn save_state(
+        &self,
+        saves: &Saves,
+        slot: &str,
+        name: Option<&str>,
+        description: Option<&str>,
+    ) -> Result<String> {
+        let security = self.challenge.borrow().clone().filter(|(_, at)| self.shown_within(*at, SECURITY_SHOWN_MS));
+        saves.save_state(slot, name, &self.machine, description, security.as_ref())
+    }
+
     /// Restores state `name` of save `slot` (see `Saves::load_state`), keeping
     /// this session's CPU speed, and releases the modifier keys the restored
     /// machine holds but the host does not (`host_held`: their make codes).
+    /// The security check the state kept, if any, is the session's again.
     /// Returns the backup of the slot's files.
     pub fn load_state(&mut self, saves: &Saves, slot: &str, name: &str, host_held: &[u8]) -> Result<PathBuf> {
+        let info = saves.state_info(slot, name)?;
         let backup = saves.load_state(slot, name, &mut self.machine)?;
         self.machine.set_speed(self.cpu_mhz);
         let stara = self.machine.dos.drive_dir.join("STARA.COM");
         self.directory =
             directory::parse(&std::fs::read(&stara).with_context(|| format!("reading {}", stara.display()))?);
         *self.recent.borrow_mut() = Recent::new(RECENT_WORDS);
-        *self.challenge.borrow_mut() = None;
+        *self.challenge.borrow_mut() = info.security;
         self.last_text = None;
         self.release_modifiers(host_held);
         Ok(backup)
@@ -356,7 +397,12 @@ impl Session {
     /// The security check shown within the last `ms` of emulated time.
     pub fn recent_security_challenge(&self, ms: f64) -> Option<SecurityCheck> {
         let at = self.challenge.borrow().as_ref()?.1;
-        (self.machine.now().saturating_sub(at) <= Machine::ms_to_master(ms)).then(|| self.security_challenge())?
+        self.shown_within(at, ms).then(|| self.security_challenge())?
+    }
+
+    /// Whether master tick `at` is within the last `ms` of emulated time.
+    fn shown_within(&self, at: u64, ms: f64) -> bool {
+        self.machine.now().saturating_sub(at) <= Machine::ms_to_master(ms)
     }
 
     /// Name of record `rec` of the ARTIFACT table, from the slot's files.
@@ -385,7 +431,8 @@ impl Session {
         self.directory.iter().find(|e| e.contains(fileno, offset as u32))
     }
 
-    /// File transfers so far, summarised by directory entry.
+    /// File transfers logged so far (none unless `machine.file_log` was set),
+    /// summarised by directory entry.
     pub fn file_summary(&self) -> String {
         let mut out = String::new();
         let Some(log) = &self.machine.file_log else {
@@ -455,7 +502,7 @@ impl Session {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::saves::scratch_dir;
+    use crate::saves::{akteron, scratch_dir};
     use pc::keyboard::shift::CTRL;
 
     fn ctrl_down(s: &Session) -> bool {
@@ -472,17 +519,17 @@ mod tests {
         }
         let dir = scratch_dir("modifiers");
         let saves = Saves::new(dir.clone());
-        let slot = saves.create("s", game, false).unwrap();
+        let (slot, _) = saves.create("s", game, false).unwrap();
         let mut s = Session::new(&slot, 4.77, None).unwrap();
         s.run_ms(2000.0).unwrap();
         s.machine.key_code(0x1d);
         s.run_ms(100.0).unwrap();
         assert!(ctrl_down(&s));
-        saves.save_state("s", Some("held"), &s.machine, None).unwrap();
+        s.save_state(&saves, "s", Some("held"), None).unwrap();
         s.machine.key_code(0x9d);
         s.run_ms(100.0).unwrap();
         s.machine.key_code(0x1d);
-        saves.save_state("s", Some("queued"), &s.machine, None).unwrap();
+        s.save_state(&saves, "s", Some("queued"), None).unwrap();
 
         let mut t = Session::new(&slot, 4.77, None).unwrap();
         for state in ["held", "queued"] {
@@ -498,9 +545,51 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
+    /// Needs the game; skipped without it.
+    #[test]
+    fn a_state_keeps_the_security_check_on_screen() {
+        let game = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../game/START"));
+        if !game.join("STARFLT.COM").is_file() {
+            eprintln!("skipping: {} is absent", game.join("STARFLT.COM").display());
+            return;
+        }
+        let dir = scratch_dir("security");
+        let saves = Saves::new(dir.clone());
+        let (slot, _) = saves.create("s", game, false).unwrap();
+        let mut s = Session::new(&slot, 4.77, None).unwrap();
+        s.run_ms(1000.0).unwrap();
+        s.save_state(&saves, "s", Some("none"), None).unwrap();
+        // As if the name printer had just run with STP-OV resident.
+        let (c, _) = akteron(0);
+        let at = s.machine.now();
+        *s.challenge.borrow_mut() = Some((c.clone(), at));
+        let shown = s.security_challenge().unwrap();
+        s.save_state(&saves, "s", Some("check"), None).unwrap();
+        s.run_ms(SECURITY_SHOWN_MS + 1000.0).unwrap();
+        assert!(s.recent_security_challenge(SECURITY_SHOWN_MS).is_none());
+        s.save_state(&saves, "s", Some("later"), None).unwrap();
+        assert_eq!(saves.state_info("s", "check").unwrap().security, Some((c, at)));
+        assert_eq!(saves.state_info("s", "later").unwrap().security, None, "no longer on screen");
+
+        let mut t = Session::new(&slot, 4.77, None).unwrap();
+        t.load_state(&saves, "s", "check", &[]).unwrap();
+        assert_eq!(t.security_challenge(), Some(shown.clone()));
+        assert_eq!(t.recent_security_challenge(SECURITY_SHOWN_MS), Some(shown));
+        assert_eq!(t.security_shown_at(), Some(at));
+        assert_eq!(t.play_script(&[KeyAction::SecurityCode]), Ok(()));
+        for state in ["none", "later"] {
+            t.load_state(&saves, "s", state, &[]).unwrap();
+            assert_eq!(t.security_challenge(), None, "{state}");
+            let e = t.play_script(&[KeyAction::SecurityCode]).unwrap_err();
+            assert!(e.to_string().contains("no security check"), "{state}: {e}");
+        }
+        drop((s, t));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     #[test]
     fn key_scripts() {
-        let k = parse_keys("aB{enter}{wait 250}{f2}").unwrap();
+        let k = parse_keys("aB{enter}{wait 250}{f2}{hold up 600}{CODE}").unwrap();
         assert_eq!(
             k,
             vec![
@@ -509,8 +598,31 @@ mod tests {
                 KeyAction::Press { code: 0x1c, shift: false },
                 KeyAction::Wait(250.0),
                 KeyAction::Press { code: 0x3c, shift: false },
+                KeyAction::Hold { code: 0x48, ms: 600.0 },
+                KeyAction::SecurityCode,
             ]
         );
-        assert!(parse_keys("{bogus}").is_err());
+        assert_eq!(parse_keys("{wait 0}{wait 86400000}").unwrap(), [KeyAction::Wait(0.0), KeyAction::Wait(MAX_MS)]);
+        for bad in [
+            "{bogus}",
+            "{enter",
+            "a{wait 500",
+            "{hold up 500",
+            "{",
+            "{wait}",
+            "{wait inf}",
+            "{wait NaN}",
+            "{wait -1}",
+            "{wait 86400001}",
+            "{hold up inf}",
+            "{hold up -5}",
+            "{hold up}",
+        ] {
+            assert!(parse_keys(bad).is_err(), "{bad:?}");
+        }
+        let e = parse_keys("{wait inf}").unwrap_err().to_string();
+        assert!(e.contains("\"inf\""), "{e}");
+        let e = parse_keys("1{enter").unwrap_err().to_string();
+        assert!(e.contains("unclosed {enter"), "{e}");
     }
 }

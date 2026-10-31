@@ -260,16 +260,33 @@ fn reading_3da_resets_attribute_flip_flop() {
 }
 
 #[test]
-fn ports_outside_the_adapter_are_refused() {
+fn registers_an_ega_lacks_are_not_answered() {
     let mut v = Video::new();
+    // Outside the adapter.
     assert_eq!(v.port_read(0x3b4, 0), None);
     assert_eq!(v.port_read(0x3ba, 0), None);
     assert!(!v.port_write(0x3b4, 0));
     assert!(!v.port_write(0x3e0, 0));
-    assert!(v.port_write(0x3d8, 0x09));
-    assert!(v.port_write(0x3d9, 0x30));
-    assert_eq!(v.port_read(0x3d9, 0), Some(0xff));
-    assert_eq!(v.port_read(0x3c5, 0), Some(0xff));
+    // CGA-only and unmodelled registers, and write-only ones read.
+    assert!(!v.port_write(0x3d8, 0x09));
+    assert!(!v.port_write(0x3d9, 0x30));
+    assert!(!v.port_write(0x3da, 0));
+    assert_eq!(v.port_read(0x3d9, 0), None);
+    assert_eq!(v.port_read(0x3c5, 0), None);
+    assert_eq!(v.port_read(0x3c0, 0), None);
+    // Indexes past the last register.
+    out(&mut v, 0x3c4, 0x05);
+    assert!(!v.port_write(0x3c5, 0));
+    out(&mut v, 0x3ce, 0x09);
+    assert!(!v.port_write(0x3cf, 0));
+    out(&mut v, 0x3d4, 0x19);
+    assert!(!v.port_write(0x3d5, 0));
+    v.port_read(0x3da, 0);
+    out(&mut v, 0x3c0, 0x14);
+    assert!(!v.port_write(0x3c0, 0x3f));
+    out(&mut v, 0x3c0, 0x21); // the flip-flop still turned: an index
+    out(&mut v, 0x3c0, 0x05);
+    assert_eq!(v.attr[1], 0x05);
 }
 
 #[test]
@@ -283,7 +300,7 @@ fn crtc_start_and_cursor_are_readable() {
     out(&mut v, 0x3d4, 0x0f);
     assert_eq!(v.port_read(0x3d5, 0), Some(0x34));
     out(&mut v, 0x3d4, 0x13);
-    assert_eq!(v.port_read(0x3d5, 0), Some(0xff));
+    assert_eq!(v.port_read(0x3d5, 0), None, "write-only");
 }
 
 #[test]

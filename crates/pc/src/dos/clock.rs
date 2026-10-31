@@ -69,12 +69,16 @@ pub(super) fn utc(secs: i64) -> LocalTime {
 }
 
 /// `secs` since the epoch in the host's time zone, from the C library.
-#[cfg(all(unix, target_pointer_width = "64"))]
+#[cfg(all(
+    target_pointer_width = "64",
+    any(target_os = "linux", target_os = "macos", target_os = "freebsd", target_os = "openbsd")
+))]
 fn local(secs: i64) -> Option<LocalTime> {
     use std::os::raw::{c_char, c_int, c_long};
 
-    // struct tm as glibc, musl, macOS and the BSDs define it; time_t is a C
-    // long on these 64-bit targets. Unread fields are there for the layout.
+    // struct tm as glibc, musl, macOS, FreeBSD and OpenBSD define it (others
+    // rename localtime_r or lack tm_gmtoff/tm_zone); time_t is a C long on
+    // these 64-bit targets. Unread fields are there for the layout.
     #[repr(C)]
     #[allow(dead_code)]
     struct Tm {
@@ -104,7 +108,7 @@ fn local(secs: i64) -> Option<LocalTime> {
     // SAFETY: zero-initialised and then filled in by localtime_r.
     let tm = unsafe { tm.assume_init() };
     Some(LocalTime {
-        year: tm.year + 1900,
+        year: tm.year.saturating_add(1900),
         month: (tm.mon + 1) as u8,
         day: tm.mday as u8,
         hour: tm.hour as u8,
@@ -114,7 +118,10 @@ fn local(secs: i64) -> Option<LocalTime> {
     })
 }
 
-#[cfg(not(all(unix, target_pointer_width = "64")))]
+#[cfg(not(all(
+    target_pointer_width = "64",
+    any(target_os = "linux", target_os = "macos", target_os = "freebsd", target_os = "openbsd")
+)))]
 fn local(_secs: i64) -> Option<LocalTime> {
     None
 }

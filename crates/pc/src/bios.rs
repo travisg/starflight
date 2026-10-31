@@ -13,8 +13,8 @@
 //! `jmp F000:E987`. Each stub is `FE F8 nn` (trap nn) followed by IRET; the
 //! timer stub then calls INT 1Ch and sends the EOI as the real one does.
 
-use crate::hle::{Hle, bda, rd8, rd16, set_stacked_flag, wr8, wr16};
-use crate::keyboard::{KeyEvent, translate};
+use crate::hle::{Hle, Mem, bda, rd8, rd16, set_stacked_flag, wr8, wr16};
+use crate::keyboard::{KeyEvent, translate_held};
 use cpu8086::{AX, CX, Cpu, DX, flags, phys};
 
 pub const ROM_SEG: u16 = 0xf000;
@@ -117,7 +117,7 @@ fn ticks_from_time_of_day() -> u32 {
 
 /// INT 08h (behind the trap): advance the tick count.
 pub fn int08(ram: &mut [u8]) {
-    let mut t = tick_count(ram) + 1;
+    let mut t = tick_count(ram).wrapping_add(1);
     if t >= TICKS_PER_DAY {
         t = 0;
         wr8(ram, bda::MIDNIGHT, 1);
@@ -131,7 +131,7 @@ pub fn push_key(ram: &mut [u8], key: u16) -> bool {
     let end = rd16(ram, bda::KBD_BUF_END_PTR);
     let head = rd16(ram, bda::KBD_HEAD);
     let tail = rd16(ram, bda::KBD_TAIL);
-    let mut next = tail + 2;
+    let mut next = tail.wrapping_add(2);
     if next >= end {
         next = start;
     }
@@ -152,37 +152,39 @@ pub fn key_buffer_empty(ram: &[u8]) -> bool {
 /// The caller acknowledges the keyboard and sends the EOI.
 pub fn int09(ram: &mut [u8], code: u8) {
     let mut flags = rd8(ram, bda::KBD_FLAGS);
-    let ev = translate(code, &mut flags);
+    let mut held = rd8(ram, bda::KBD_FLAGS2);
+    let ev = translate_held(code, &mut flags, &mut held);
     wr8(ram, bda::KBD_FLAGS, flags);
+    wr8(ram, bda::KBD_FLAGS2, held);
     if let KeyEvent::Key(k) = ev {
         push_key(ram, k);
     }
 }
 
-pub fn int16(cpu: &mut Cpu, ram: &mut [u8]) -> Hle {
+pub fn int16(cpu: &mut Cpu, mem: &mut Mem) -> Hle {
     let ah = cpu.reg8(4);
-    let head = rd16(ram, bda::KBD_HEAD);
-    let tail = rd16(ram, bda::KBD_TAIL);
+    let head = mem.rd16(bda::KBD_HEAD);
+    let tail = mem.rd16(bda::KBD_TAIL);
     match ah {
         0x00 | 0x10 => {
             if head == tail {
                 return Hle::Retry;
             }
-            cpu.regs[AX] = rd16(ram, bda::BASE + head as u32);
-            let mut next = head + 2;
-            if next >= rd16(ram, bda::KBD_BUF_END_PTR) {
-                next = rd16(ram, bda::KBD_BUF_START_PTR);
+            cpu.regs[AX] = mem.rd16(bda::BASE + head as u32);
+            let mut next = head.wrapping_add(2);
+            if next >= mem.rd16(bda::KBD_BUF_END_PTR) {
+                next = mem.rd16(bda::KBD_BUF_START_PTR);
             }
-            wr16(ram, bda::KBD_HEAD, next);
+            mem.wr16(bda::KBD_HEAD, next);
         }
         0x01 | 0x11 => {
             let empty = head == tail;
             if !empty {
-                cpu.regs[AX] = rd16(ram, bda::BASE + head as u32);
+                cpu.regs[AX] = mem.rd16(bda::BASE + head as u32);
             }
-            set_stacked_flag(cpu, ram, flags::ZF, empty);
+            set_stacked_flag(cpu, mem, flags::ZF, empty);
         }
-        0x02 | 0x12 => cpu.set_reg8(0, rd8(ram, bda::KBD_FLAGS)),
+        0x02 | 0x12 => cpu.set_reg8(0, mem.rd8(bda::KBD_FLAGS)),
         _ => return Hle::Unsupported(format!("INT 16h AH={ah:02X}")),
     }
     Hle::Done
@@ -205,14 +207,14 @@ pub fn int1a(cpu: &mut Cpu, ram: &mut [u8]) -> Hle {
 
 /// Services with simple fixed answers, and the default handlers of all other
 /// vectors. `None` means the vector has a dedicated handler elsewhere.
-pub fn simple(vector: u8, cpu: &mut Cpu, ram: &mut [u8]) -> Option<Hle> {
+pub fn simple(vector: u8, cpu: &mut Cpu, mem: &mut Mem) -> Option<Hle> {
     let r = match vector {
         0x11 => {
-            cpu.regs[AX] = rd16(ram, bda::EQUIPMENT);
+            cpu.regs[AX] = mem.rd16(bda::EQUIPMENT);
             Hle::Done
         }
         0x12 => {
-            cpu.regs[AX] = rd16(ram, bda::MEMORY_KB);
+            cpu.regs[AX] = mem.rd16(bda::MEMORY_KB);
             Hle::Done
         }
         // No serial ports or printers: report time-outs.
@@ -227,7 +229,7 @@ pub fn simple(vector: u8, cpu: &mut Cpu, ram: &mut [u8]) -> Option<Hle> {
         // XT: no extended services.
         0x15 => {
             cpu.set_reg8(4, 0x86);
-            set_stacked_flag(cpu, ram, flags::CF, true);
+            set_stacked_flag(cpu, mem, flags::CF, true);
             Hle::Done
         }
         v if NOOP_VECTORS.contains(&v) => Hle::Done,
@@ -243,6 +245,7 @@ pub fn simple(vector: u8, cpu: &mut Cpu, ram: &mut [u8]) -> Option<Hle> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::video::Video;
 
     #[test]
     fn vectors_point_at_traps() {
@@ -265,5 +268,58 @@ mod tests {
             assert!(push_key(&mut ram, i), "slot {i}");
         }
         assert!(!push_key(&mut ram, 99), "16-word ring holds 15 keys");
+    }
+
+    #[test]
+    fn stacked_flags_stay_out_of_the_roms() {
+        let mut ram = vec![0u8; 1 << 20];
+        install(&mut ram);
+        let mut video = Video::new();
+        let mut cpu = Cpu::new();
+        // A caller stack whose FLAGS word would sit on the reset vector.
+        cpu.sregs[cpu8086::SS] = 0xf000;
+        cpu.regs[cpu8086::SP] = 0xffec;
+        let before = ram[0xffff0..].to_vec();
+        let mut mem = Mem::new(&mut ram, &mut video);
+        assert_eq!(simple(0x15, &mut cpu, &mut mem), Some(Hle::Done));
+        let fault = mem.into_fault().expect("refused");
+        assert!(fault.contains("ROM area at FFFF0"), "{fault}");
+        assert_eq!(ram[0xffff0..], before[..]);
+    }
+
+    #[test]
+    fn int09_tracks_held_toggle_keys() {
+        let mut ram = vec![0u8; 1 << 20];
+        install(&mut ram);
+        for code in [0x3a, 0x3a, 0x3a, 0xba] {
+            int09(&mut ram, code);
+        }
+        assert_eq!((rd8(&ram, bda::KBD_FLAGS), rd8(&ram, bda::KBD_FLAGS2)), (0x40, 0));
+        int09(&mut ram, 0x46);
+        assert_eq!((rd8(&ram, bda::KBD_FLAGS), rd8(&ram, bda::KBD_FLAGS2)), (0x50, 0x10));
+        assert!(key_buffer_empty(&ram));
+    }
+
+    #[test]
+    fn buffer_pointers_wrap_like_16_bit_registers() {
+        let mut ram = vec![0u8; 1 << 20];
+        install(&mut ram);
+        // The program owns the BDA; pointers at the top of the 16-bit range wrap.
+        wr16(&mut ram, bda::KBD_BUF_END_PTR, 0xffff);
+        wr16(&mut ram, bda::KBD_TAIL, 0xfffe);
+        assert!(push_key(&mut ram, 0x1e61));
+        assert_eq!(rd16(&ram, bda::KBD_TAIL), 0);
+        assert_eq!(rd16(&ram, 0x400 + 0xfffe), 0x1e61);
+
+        let mut cpu = Cpu::new();
+        wr16(&mut ram, bda::KBD_HEAD, 0xfffe);
+        cpu.regs[AX] = 0;
+        let mut video = Video::new();
+        assert_eq!(int16(&mut cpu, &mut Mem::new(&mut ram, &mut video)), Hle::Done);
+        assert_eq!((cpu.regs[AX], rd16(&ram, bda::KBD_HEAD)), (0x1e61, 0));
+
+        set_tick_count(&mut ram, u32::MAX);
+        int08(&mut ram);
+        assert_eq!(tick_count(&ram), 0);
     }
 }

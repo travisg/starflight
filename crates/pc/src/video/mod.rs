@@ -12,12 +12,13 @@
 //!   decode them by the graphics controller's memory map (misc register bits
 //!   2-3), like the card: in mode 0Dh only A000-AFFF is live; in text and CGA
 //!   modes only B800-BFFF is.
-//! - `port_read`/`port_write` return `None`/`false` for ports that are not the
-//!   adapter's, so the bus can report them. `now` is in master-clock ticks.
+//! - `port_read`/`port_write` return `None`/`false` when no register answers
+//!   the access, so the bus can report it. `now` is in master-clock ticks.
 //! - `int10` implements the EGA BIOS video services. It reads registers from
 //!   `cpu`, may read or write `ram` (the 1 MiB address space: BDA at 0x400,
 //!   caller buffers such as ES:DX palette tables), and writes results back to
-//!   `cpu`. Unknown functions return `Hle::Unsupported`. Like the real BIOS
+//!   `cpu`. Unknown functions, and caller buffers in display memory, return
+//!   `Hle::Unsupported`. Like the real BIOS
 //!   it takes the mode, page and cursor positions from the BDA, so POST must
 //!   call `set_mode` before the first INT 10h.
 //! - The machine calls `vretrace` at the start of every vertical retrace; the
@@ -25,8 +26,12 @@
 //! - `render` draws what the monitor would show into a `Frame`.
 //!
 //! The adapter owns ports 3C0-3CF and 3D0-3DF (colour addressing only; the
-//! misc output I/O select bit is ignored). Registers it does not model, such
-//! as the CGA-only 3D8/3D9, accept writes and read FFh.
+//! misc output I/O select bit is ignored). It answers writes to the attribute,
+//! misc output, sequencer, graphics controller and CRTC registers, and reads
+//! of input status 0 and 1 and CRTC registers 0C-0F; everything else in the
+//! range (registers an EGA does not have, such as the CGA-only 3D8/3D9, the
+//! write-only ones read back, and indexes past the last register) is not
+//! answered.
 //!
 //! Display memory: memory maps A0000 and B0000 reach the four planes through
 //! the graphics controller (`ega`); the B8000 map is a plain linear 32 KiB
@@ -84,9 +89,6 @@ const CRTC_MODE: usize = 0x17;
 const SEQ_MAP_MASK: usize = 2;
 
 const CGA_MEM_SIZE: usize = 0x8000;
-
-/// 3C0-3CF and 3D0-3DF.
-const PORTS: std::ops::RangeInclusive<u16> = 0x3c0..=0x3df;
 
 /// A rendered picture. Pixels are 0x00RRGGBB, row-major.
 #[derive(Clone, Debug, Default)]
@@ -197,65 +199,63 @@ impl Video {
     }
 
     pub fn port_read(&mut self, port: u16, now: u64) -> Option<u8> {
-        if !PORTS.contains(&port) {
-            return None;
-        }
-        let v = match port {
+        match port {
             // Input status 0: bit 4 senses the configuration switch chosen
             // by the misc output clock select. 1001 reads the same in either
             // switch order.
             0x3c2 => {
                 let sel = (self.misc_out >> 2) & 3;
-                ((SWITCHES >> (3 - sel)) & 1) << 4
+                Some(((SWITCHES >> (3 - sel)) & 1) << 4)
             }
             0x3d5 => match self.crtc_index {
-                0x0c..=0x0f => self.crtc[self.crtc_index as usize],
-                _ => 0xff,
+                0x0c..=0x0f => Some(self.crtc[self.crtc_index as usize]),
+                _ => None,
             },
             0x3da => {
                 self.attr_flip = false;
-                input_status1(now)
+                Some(input_status1(now))
             }
-            _ => 0xff,
-        };
-        Some(v)
+            _ => None,
+        }
     }
 
     pub fn port_write(&mut self, port: u16, v: u8) -> bool {
-        if !PORTS.contains(&port) {
-            return false;
-        }
         match port {
             0x3c0 => {
-                if self.attr_flip {
-                    self.write_attr((self.attr_index & 0x1f) as usize, v);
-                } else {
+                let data = self.attr_flip;
+                self.attr_flip = !data;
+                if !data {
                     self.attr_index = v & 0x3f;
+                    return true;
                 }
-                self.attr_flip = !self.attr_flip;
-            }
-            0x3c2 => self.misc_out = v,
-            0x3c4 => self.seq_index = v & 0x07,
-            0x3c5 => {
-                if let Some(r) = self.seq.get_mut(self.seq_index as usize) {
-                    *r = v;
+                let i = (self.attr_index & 0x1f) as usize;
+                if i >= self.attr.len() {
+                    return false;
                 }
+                self.write_attr(i, v);
+                true
             }
-            0x3ce => self.gc_index = v & 0x0f,
-            0x3cf => {
-                if let Some(r) = self.gc.get_mut(self.gc_index as usize) {
-                    *r = v;
-                }
+            0x3c2 => {
+                self.misc_out = v;
+                true
             }
-            0x3d4 => self.crtc_index = v & 0x1f,
-            0x3d5 => {
-                if let Some(r) = self.crtc.get_mut(self.crtc_index as usize) {
-                    *r = v;
-                }
+            0x3c4 => {
+                self.seq_index = v & 0x07;
+                true
             }
-            _ => {}
+            0x3c5 => set(self.seq.get_mut(self.seq_index as usize), v),
+            0x3ce => {
+                self.gc_index = v & 0x0f;
+                true
+            }
+            0x3cf => set(self.gc.get_mut(self.gc_index as usize), v),
+            0x3d4 => {
+                self.crtc_index = v & 0x1f;
+                true
+            }
+            0x3d5 => set(self.crtc.get_mut(self.crtc_index as usize), v),
+            _ => false,
         }
-        true
     }
 
     /// Palette and overscan registers hold 6-bit colours.
@@ -350,6 +350,11 @@ impl Video {
     pub fn text_lines(&self) -> Option<Vec<String>> {
         render::text_lines(self)
     }
+}
+
+/// Writes an indexed register; false for an index past the last one.
+fn set(reg: Option<&mut u8>, v: u8) -> bool {
+    reg.map(|r| *r = v).is_some()
 }
 
 /// Input status 1: bit 0 = blanking (not in active display), bit 3 =

@@ -18,6 +18,7 @@
 use anyhow::{Context, Result, anyhow, bail};
 use pc::Machine;
 use sfforth::consts::STARFLT_COM_SIZE;
+use sfforth::security::{self, Challenge};
 use std::path::{Path, PathBuf};
 
 pub const GAME_FILES: [&str; 3] = ["STARFLT.COM", "STARA.COM", "STARB.COM"];
@@ -32,11 +33,14 @@ const STATE_INFO: &str = "info.txt";
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct StateInfo {
     pub name: String,
-    /// `YYYY-MM-DD HH:MM:SS UTC`; sorts chronologically.
+    /// `YYYY-MM-DD HH:MM:SS.mmm UTC` (older states lack the milliseconds).
     pub created: String,
     pub emulated_s: f64,
     pub instructions: u64,
     pub description: Option<String>,
+    /// The launch security check on screen when the state was saved, with
+    /// the master tick it was shown at.
+    pub security: Option<(Challenge, u64)>,
 }
 
 impl StateInfo {
@@ -48,6 +52,20 @@ impl StateInfo {
         if let Some(d) = &self.description {
             t.push_str(&format!("description: {d}\n"));
         }
+        if let Some((c, shown)) = &self.security {
+            let line = |s: &str| s.replace(['\n', '\r'], " ");
+            t.push_str(&format!(
+                "security: planet={} artifact={} race={} record={} shown={shown} code={}\n\
+                 security-planet: {}\nsecurity-race: {}\n",
+                c.planet,
+                c.artifact,
+                c.race,
+                c.artifact_record,
+                c.code,
+                line(&c.planet_name),
+                line(&c.race_name)
+            ));
+        }
         t
     }
 
@@ -55,6 +73,7 @@ impl StateInfo {
     /// their defaults.
     fn parse(name: &str, text: &str) -> StateInfo {
         let mut info = StateInfo { name: name.to_string(), ..Default::default() };
+        let (mut security, mut planet_name, mut race_name) = (None, None, None);
         for line in text.lines() {
             let Some((k, v)) = line.split_once(':') else {
                 continue;
@@ -65,11 +84,44 @@ impl StateInfo {
                 "emulated" => info.emulated_s = v.trim_end_matches('s').trim().parse().unwrap_or(0.0),
                 "instructions" => info.instructions = v.parse().unwrap_or(0),
                 "description" => info.description = Some(v.to_string()),
+                "security" => security = Some(v),
+                "security-planet" => planet_name = Some(v.to_string()),
+                "security-race" => race_name = Some(v.to_string()),
                 _ => {}
             }
         }
+        info.security = parse_security(security, planet_name, race_name);
         info
     }
+}
+
+/// The `security` lines of `info.txt`; `None` unless all are present and in
+/// range. The code is recomputed rather than read.
+fn parse_security(
+    fields: Option<&str>,
+    planet_name: Option<String>,
+    race_name: Option<String>,
+) -> Option<(Challenge, u64)> {
+    let fields = fields?;
+    let get =
+        |key: &str| fields.split_whitespace().find_map(|f| f.strip_prefix(key)?.strip_prefix('=')?.parse::<u64>().ok());
+    let (planet, artifact, race, record, shown) =
+        (get("planet")?, get("artifact")?, get("race")?, get("record")?, get("shown")?);
+    // The ranges `security::read` accepts.
+    if planet > 23 || artifact > 23 || race > 8 || record > 0xff {
+        return None;
+    }
+    let (planet, artifact, race) = (planet as u16, artifact as u16, race as u16);
+    let c = Challenge {
+        planet,
+        artifact,
+        race,
+        planet_name: planet_name?,
+        race_name: race_name?,
+        artifact_record: record as u8,
+        code: security::code(planet, artifact, race),
+    };
+    Some((c, shown))
 }
 
 /// A state load that failed partway and could not put the slot's files back:
@@ -115,9 +167,12 @@ impl Saves {
     }
 
     /// Creates (or with `replace`, overwrites) a slot from a game directory.
-    pub fn create(&self, name: &str, from: &Path, replace: bool) -> Result<PathBuf> {
+    /// Returns the slot's directory and, if it replaced a slot, the backup of
+    /// the files it had.
+    pub fn create(&self, name: &str, from: &Path, replace: bool) -> Result<(PathBuf, Option<PathBuf>)> {
         let dir = self.slot_dir(name)?;
-        if self.exists(name) && !replace {
+        let existed = self.exists(name);
+        if existed && !replace {
             bail!("save {name:?} already exists at {} (use --replace to overwrite it)", dir.display());
         }
         for f in GAME_FILES {
@@ -126,14 +181,26 @@ impl Saves {
                 bail!("{} is missing; {} does not look like a Starflight directory", src.display(), from.display());
             }
         }
-        std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
-        if same_dir(&dir, from) {
+        if same_path(&dir, from) {
             bail!("refusing to use {} as both source and save slot", dir.display());
         }
+        let backup = if existed {
+            // Never prune the source, if it is one of this slot's backups.
+            let backups = dir.join("backups");
+            let from_backup = from.canonicalize().ok().filter(|f| backups.canonicalize().ok().as_deref() == f.parent());
+            let keep = from_backup.as_ref().and_then(|f| f.file_name()).and_then(|n| n.to_str());
+            let b = self
+                .backup_keeping(name, keep)
+                .with_context(|| format!("backing up save {name:?} before replacing it"))?;
+            Some(b)
+        } else {
+            None
+        };
+        std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
         for f in GAME_FILES {
             copy_writable(&from.join(f), &dir.join(f))?;
         }
-        Ok(dir)
+        Ok((dir, backup))
     }
 
     /// Copies the slot's game files, with their times, into a new timestamped
@@ -149,7 +216,8 @@ impl Saves {
         let mut dest = dir.join("backups").join(&stamp);
         let mut n = 1;
         while dest.exists() {
-            dest = dir.join("backups").join(format!("{stamp}-{n}"));
+            // Two digits keep same-second backups in order for pruning.
+            dest = dir.join("backups").join(format!("{stamp}-{n:02}"));
             n += 1;
         }
         std::fs::create_dir_all(&dest)?;
@@ -185,9 +253,14 @@ impl Saves {
     /// first). The backup itself is kept.
     pub fn restore(&self, name: &str, backup: &str) -> Result<()> {
         let dir = self.slot_dir(name)?;
+        check_name("backup", backup)?;
         let src = dir.join("backups").join(backup);
         if !src.join("STARA.COM").is_file() {
             bail!("no backup {backup:?} in save {name:?}; see `starflight saves {name}`");
+        }
+        // Copying a file onto itself would empty it.
+        if let Some(f) = GAME_FILES.iter().find(|f| same_path(&src.join(f), &dir.join(f))) {
+            bail!("backup {backup:?} of save {name:?} holds the slot's own {f}, not a copy");
         }
         self.backup_keeping(name, Some(backup))?;
         for f in GAME_FILES {
@@ -211,8 +284,16 @@ impl Saves {
     }
 
     /// Saves the machine running `slot` and the slot's STARA/STARB as a new
-    /// state, named `name` or `quick-<timestamp>`. Returns the name.
-    pub fn save_state(&self, slot: &str, name: Option<&str>, m: &Machine, description: Option<&str>) -> Result<String> {
+    /// state, named `name` or `quick-<timestamp>`, with the security check
+    /// on screen (and the master tick it was shown at). Returns the name.
+    pub fn save_state(
+        &self,
+        slot: &str,
+        name: Option<&str>,
+        m: &Machine,
+        description: Option<&str>,
+        security: Option<&(Challenge, u64)>,
+    ) -> Result<String> {
         let slot_dir = self.slot_dir(slot)?;
         if !self.exists(slot) {
             bail!("no save {slot:?}");
@@ -251,6 +332,7 @@ impl Saves {
             emulated_s: Machine::master_to_ms(m.now()) / 1000.0,
             instructions: m.instructions,
             description: description.map(|d| d.split_whitespace().collect::<Vec<_>>().join(" ")),
+            security: security.cloned(),
         };
         std::fs::write(tmp.join(STATE_INFO), info.to_text())?;
         let dest = states.join(&name);
@@ -297,6 +379,14 @@ impl Saves {
         }
     }
 
+    /// State `name`'s `info.txt`, as far as it can be read; a missing or
+    /// unreadable file gives the defaults.
+    pub fn state_info(&self, slot: &str, name: &str) -> Result<StateInfo> {
+        check_name("state", name)?;
+        let path = self.states_dir(slot)?.join(name).join(STATE_INFO);
+        Ok(StateInfo::parse(name, &std::fs::read_to_string(path).unwrap_or_default()))
+    }
+
     /// A slot's states, oldest first.
     pub fn states(&self, slot: &str) -> Result<Vec<StateInfo>> {
         let dir = self.states_dir(slot)?;
@@ -313,7 +403,7 @@ impl Saves {
                 .collect(),
             Err(_) => Vec::new(),
         };
-        v.sort_by(|a, b| a.created.cmp(&b.created).then_with(|| a.name.cmp(&b.name)));
+        v.sort_by(|a, b| created_key(&a.created).cmp(&created_key(&b.created)).then_with(|| a.name.cmp(&b.name)));
         Ok(v)
     }
 
@@ -340,13 +430,13 @@ fn check_name(what: &str, name: &str) -> Result<()> {
 
 /// A state belongs to the slot whose files the machine's DOS uses.
 fn check_running(m: &Machine, slot_dir: &Path, slot: &str) -> Result<()> {
-    if !same_dir(&m.dos.drive_dir, slot_dir) {
+    if !same_path(&m.dos.drive_dir, slot_dir) {
         bail!("the machine runs {}, not save {slot:?}", m.dos.drive_dir.display());
     }
     Ok(())
 }
 
-fn same_dir(a: &Path, b: &Path) -> bool {
+fn same_path(a: &Path, b: &Path) -> bool {
     match (a.canonicalize(), b.canonicalize()) {
         (Ok(a), Ok(b)) => a == b,
         _ => false,
@@ -357,6 +447,13 @@ fn same_dir(a: &Path, b: &Path) -> bool {
 fn copy_writable(src: &Path, dst: &Path) -> Result<()> {
     std::fs::copy(src, dst).with_context(|| format!("copying {} to {}", src.display(), dst.display()))?;
     let mut perm = std::fs::metadata(dst)?.permissions();
+    // Owner write only: on Unix set_readonly(false) makes a file world-writable.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        perm.set_mode(perm.mode() | 0o200);
+    }
+    #[cfg(not(unix))]
     #[allow(clippy::permissions_set_readonly_false)]
     perm.set_readonly(false);
     std::fs::set_permissions(dst, perm)?;
@@ -389,24 +486,33 @@ fn put_back(src: &Path, dst: &Path) -> Result<()> {
     copy_with_mtime(src, dst)
 }
 
-/// The current UTC time as (year, month, day, hour, minute, second).
-fn utc_now() -> (i64, u32, u32, u64, u64, u64) {
-    let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+/// The current UTC time as (year, month, day, hour, minute, second,
+/// millisecond).
+fn utc_now() -> (i64, u32, u32, u64, u64, u64, u32) {
+    let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default();
+    let secs = t.as_secs();
     let (days, rem) = (secs / 86_400, secs % 86_400);
     let (y, m, d) = civil_from_days(days as i64);
-    (y, m, d, rem / 3600, rem / 60 % 60, rem % 60)
+    (y, m, d, rem / 3600, rem / 60 % 60, rem % 60, t.subsec_millis())
 }
 
 /// UTC timestamp for backup and quick state names, e.g. 20261030-231502.
 fn timestamp() -> String {
-    let (y, m, d, h, min, s) = utc_now();
+    let (y, m, d, h, min, s, _) = utc_now();
     format!("{y:04}{m:02}{d:02}-{h:02}{min:02}{s:02}")
 }
 
-/// UTC time for `info.txt`, e.g. 2026-10-30 23:15:02 UTC.
+/// UTC time for `info.txt`, e.g. 2026-10-30 23:15:02.123 UTC.
 fn created_stamp() -> String {
-    let (y, m, d, h, min, s) = utc_now();
-    format!("{y:04}-{m:02}-{d:02} {h:02}:{min:02}:{s:02} UTC")
+    let (y, m, d, h, min, s, ms) = utc_now();
+    format!("{y:04}-{m:02}-{d:02} {h:02}:{min:02}:{s:02}.{ms:03} UTC")
+}
+
+/// A `created` stamp that sorts chronologically: one without milliseconds
+/// (an older state's) counts as `.000`.
+fn created_key(created: &str) -> String {
+    let t = created.trim_end_matches(" UTC");
+    if t.contains('.') { t.to_string() } else { format!("{t}.000") }
 }
 
 /// Days since 1970-01-01 to (year, month, day), proleptic Gregorian
@@ -435,6 +541,22 @@ pub(crate) fn scratch_dir(name: &str) -> PathBuf {
     dir
 }
 
+/// AKTERON / AMAZING ARTIFACT / GAZURTOID (code 56), shown at master tick
+/// `at`; the artifact record is made up.
+#[cfg(test)]
+pub(crate) fn akteron(at: u64) -> (Challenge, u64) {
+    let c = Challenge {
+        planet: 12,
+        artifact: 19,
+        race: 5,
+        planet_name: "AKTERON".into(),
+        race_name: "GAZURTOID".into(),
+        artifact_record: 3,
+        code: 56,
+    };
+    (c, at)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -448,15 +570,53 @@ mod tests {
 
     #[test]
     fn info_text() {
-        let info = StateInfo {
+        let mut info = StateInfo {
             name: "x".into(),
-            created: "2026-10-30 23:15:02 UTC".into(),
+            created: "2026-10-30 23:15:02.042 UTC".into(),
             emulated_s: 12.5,
             instructions: 42,
             description: Some("a: b".into()),
+            security: None,
         };
         assert_eq!(StateInfo::parse("x", &info.to_text()), info);
+        info.security = Some(akteron(123_456_789));
+        let text = info.to_text();
+        assert!(text.contains("code=56"), "{text}");
+        assert_eq!(StateInfo::parse("x", &text), info);
         assert_eq!(StateInfo::parse("y", "junk\nemulated: nope\n").name, "y");
+
+        // Written before states kept the security check or milliseconds.
+        let old = StateInfo::parse("o", "created: 2026-10-30 23:15:02 UTC\nemulated: 1.000 s\ninstructions: 7\n");
+        assert_eq!((old.created.as_str(), old.instructions, old.security), ("2026-10-30 23:15:02 UTC", 7, None));
+        // Incomplete or out of range: no security check.
+        let partial = text.lines().filter(|l| !l.starts_with("security-race")).collect::<Vec<_>>().join("\n");
+        assert_eq!(StateInfo::parse("x", &partial).security, None);
+        assert_eq!(StateInfo::parse("x", &text.replace("planet=12", "planet=24")).security, None);
+        // The code comes from the formula, not the file.
+        assert_eq!(StateInfo::parse("x", &text.replace("code=56", "code=1")).security, info.security);
+    }
+
+    #[test]
+    fn states_sort_by_creation_within_a_second() {
+        let dir = scratch_dir("state-order");
+        let saves = Saves::new(dir.join("saves"));
+        let states = saves.root.join("s/states");
+        let stamps = [
+            ("a", "2026-10-30 23:15:02.400 UTC"),
+            ("quick-20261030-231502-10", "2026-10-30 23:15:02.300 UTC"),
+            ("z", "2026-10-30 23:15:02.100 UTC"),
+            ("quick-20261030-231502-9", "2026-10-30 23:15:02.200 UTC"),
+            ("old", "2026-10-30 23:15:02 UTC"),
+            ("later", "2026-10-30 23:15:03 UTC"),
+        ];
+        for (name, created) in stamps {
+            std::fs::create_dir_all(states.join(name)).unwrap();
+            std::fs::write(states.join(name).join(STATE_MACHINE), b"").unwrap();
+            std::fs::write(states.join(name).join(STATE_INFO), format!("created: {created}\n")).unwrap();
+        }
+        let order: Vec<String> = saves.states("s").unwrap().into_iter().map(|s| s.name).collect();
+        assert_eq!(order, ["old", "z", "quick-20261030-231502-9", "quick-20261030-231502-10", "a", "later"]);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// A slot whose STARFLT.COM has the known size, and a machine running
@@ -467,8 +627,73 @@ mod tests {
         std::fs::write(game.join("STARFLT.COM"), vec![0u8; STARFLT_COM_SIZE]).unwrap();
         std::fs::write(game.join("STARA.COM"), b"A at save").unwrap();
         std::fs::write(game.join("STARB.COM"), b"B at save").unwrap();
-        let slot = saves.create("s", &game, false).unwrap();
+        let (slot, backup) = saves.create("s", &game, false).unwrap();
+        assert_eq!(backup, None);
         Machine::new(&Config::default(), slot, &[0xeb, 0xfe])
+    }
+
+    /// The slot's three files, to compare before and after.
+    fn slot_files(slot: &Path) -> Vec<Vec<u8>> {
+        GAME_FILES.iter().map(|f| std::fs::read(slot.join(f)).unwrap()).collect()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn restore_refuses_a_backup_outside_the_backups_dir() {
+        let dir = scratch_dir("restore-outside");
+        let saves = Saves::new(dir.join("saves"));
+        fake_slot(&saves, &dir);
+        let slot = saves.slot_dir("s").unwrap();
+        let before = slot_files(&slot);
+        // A backup that is a link to the slot itself.
+        std::fs::create_dir_all(slot.join("backups")).unwrap();
+        std::os::unix::fs::symlink("..", slot.join("backups/evil")).unwrap();
+        let abs = slot.to_str().unwrap().to_string();
+        for bad in ["..", abs.as_str(), ".", "", "evil"] {
+            let e = saves.restore("s", bad).unwrap_err();
+            assert!(e.to_string().contains("backup"), "{bad:?}: {e:#}");
+            assert_eq!(slot_files(&slot), before, "{bad:?} leaves the files alone");
+            assert_eq!(saves.backups("s").unwrap(), ["evil"], "{bad:?} makes no backup");
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn replacing_a_slot_backs_it_up() {
+        let dir = scratch_dir("replace");
+        let saves = Saves::new(dir.join("saves"));
+        let m = fake_slot(&saves, &dir);
+        let slot = saves.slot_dir("s").unwrap();
+        saves.save_state("s", Some("one"), &m, None, None).unwrap();
+        std::fs::write(slot.join("STARA.COM"), b"A played").unwrap();
+
+        assert!(saves.create("s", &dir.join("game"), false).is_err());
+        assert!(saves.create("s", &dir.join("nowhere"), true).is_err());
+        assert!(saves.create("s", &slot, true).is_err());
+        assert_eq!(saves.backups("s").unwrap().len(), 0, "a refused create makes no backup");
+
+        let (_, backup) = saves.create("s", &dir.join("game"), true).unwrap();
+        let backup = backup.expect("a replaced slot is backed up");
+        assert_eq!(std::fs::read(backup.join("STARA.COM")).unwrap(), b"A played");
+        assert_eq!(std::fs::read(slot.join("STARA.COM")).unwrap(), b"A at save");
+        assert_eq!(saves.states("s").unwrap().len(), 1, "states are kept");
+
+        // Replacing from the slot's own oldest backup keeps that backup.
+        let names: Vec<String> = (0..KEEP_BACKUPS - 1).map(|i| format!("20260101-0000{i:02}")).collect();
+        for n in &names {
+            let b = slot.join("backups").join(n);
+            std::fs::create_dir_all(&b).unwrap();
+            for f in GAME_FILES {
+                std::fs::write(b.join(f), format!("{f} {n}")).unwrap();
+            }
+        }
+        saves.create("s", &slot.join("backups").join(&names[0]), true).unwrap();
+        assert_eq!(std::fs::read_to_string(slot.join("STARA.COM")).unwrap(), format!("STARA.COM {}", names[0]));
+        let after = saves.backups("s").unwrap();
+        assert_eq!(after.len(), KEEP_BACKUPS);
+        assert!(after.contains(&names[0]) && !after.contains(&names[1]), "{after:?}");
+        drop(m);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
@@ -480,11 +705,11 @@ mod tests {
         assert_eq!(m.run_for_ms(50.0), None);
         let at = m.now();
 
-        assert_eq!(saves.save_state("s", Some("one"), &m, Some("first\nline")).unwrap(), "one");
+        assert_eq!(saves.save_state("s", Some("one"), &m, Some("first\nline"), None).unwrap(), "one");
         assert!(saves.check_new_state("s", "one").is_err());
-        assert!(saves.save_state("s", Some("one"), &m, None).is_err());
-        assert!(saves.save_state("s", Some(".hidden"), &m, None).is_err());
-        let quick = saves.save_state("s", None, &m, None).unwrap();
+        assert!(saves.save_state("s", Some("one"), &m, None, None).is_err());
+        assert!(saves.save_state("s", Some(".hidden"), &m, None, None).is_err());
+        let quick = saves.save_state("s", None, &m, None, None).unwrap();
         assert!(quick.starts_with("quick-"), "{quick}");
         let states = saves.states("s").unwrap();
         let mut names: Vec<&str> = states.iter().map(|s| s.name.as_str()).collect();
@@ -493,6 +718,7 @@ mod tests {
         let one = states.iter().find(|s| s.name == "one").unwrap();
         assert_eq!(one.description.as_deref(), Some("first line"));
         assert_eq!(one.instructions, m.instructions);
+        assert_eq!((one.created.len(), &one.created[19..20]), (27, "."), "milliseconds: {}", one.created);
 
         // The game moves on and rewrites STARA; loading puts both back.
         std::fs::write(slot.join("STARA.COM"), b"A later").unwrap();
@@ -515,7 +741,7 @@ mod tests {
         assert_eq!(m.now(), at);
 
         let elsewhere = Machine::new(&Config::default(), dir.clone(), &[0xeb, 0xfe]);
-        assert!(saves.save_state("s", Some("x"), &elsewhere, None).unwrap_err().to_string().contains("runs"));
+        assert!(saves.save_state("s", Some("x"), &elsewhere, None, None).unwrap_err().to_string().contains("runs"));
 
         std::fs::write(slot.join("STARFLT.COM"), b"short").unwrap();
         assert!(saves.load_state("s", &quick, &mut m).unwrap_err().to_string().contains("54183"));
@@ -551,7 +777,7 @@ mod tests {
         let saves = Saves::new(dir.join("saves"));
         let mut m = fake_slot(&saves, &dir);
         let slot = saves.slot_dir("s").unwrap();
-        saves.save_state("s", Some("one"), &m, None).unwrap();
+        saves.save_state("s", Some("one"), &m, None, None).unwrap();
         assert_eq!(m.run_for_ms(50.0), None);
         let at = m.now();
 

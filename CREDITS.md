@@ -27,8 +27,7 @@ point of use in the code (for example `// BOOT-HOOK; s-macke patch.c`).
 Used here:
 
 - The fixed addresses in `crates/sfforth/src/consts.rs` (DOCOL, DOVAR, DOCON,
-  EXIT, LIT, 2LIT, OPERATOR, the vocabulary heads), from
-  `src/disasOV/global.h`.
+  OPERATOR, the vocabulary heads), from `src/disasOV/global.h`.
 - The dictionary name encoding (XOR 0x7F, bit 7 on the last character),
   from `src/patch/patch.c`.
 - The STARA/STARB directory entry layout, from `src/disasOV/extract.c`.
@@ -116,6 +115,12 @@ drawn for this project.
 The EGA register values for each BIOS mode follow the IBM EGA BIOS video
 parameter tables, reconstructed rather than copied
 (`crates/pc/src/video/modes.rs`).
+
+### Intel: 8253 Programmable Interval Timer data sheet
+
+How each counter mode responds to its gate input: suspending, forcing OUT
+high, restarting on a rising edge, or triggering
+(`crates/pc/src/pit.rs`).
 
 ### The DOSBox team
 

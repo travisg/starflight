@@ -22,13 +22,6 @@ pub const DOCOL: u16 = 0x224C;
 pub const DOVAR: u16 = 0x1D29;
 pub const DOCON: u16 = 0x2214;
 
-/// Code addresses (code-field contents) of threaded-code primitives.
-pub const EXIT: u16 = 0x1692;
-pub const LIT: u16 = 0x175F;
-pub const TWOLIT: u16 = 0x1618;
-pub const BRANCH: u16 = 0x1662;
-pub const ZBRANCH: u16 = 0x15FC;
-
 /// DI always holds the address of the word OPERATOR (s-macke REGDI).
 pub const OPERATOR: u16 = 0x78C;
 

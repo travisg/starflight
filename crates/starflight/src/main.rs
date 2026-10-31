@@ -45,6 +45,12 @@ enum Cmd {
         word: String,
         #[arg(long, default_value = DEFAULT_GAME_DIR)]
         game_dir: PathBuf,
+        /// Read names and code from this 64 KiB dump of the game segment
+        /// (`headless --dump-seg`) instead of STARFLT.COM, to reach words of
+        /// the overlays loaded at the time; those are mostly headerless, so
+        /// give their hex CFA.
+        #[arg(long, conflicts_with = "game_dir")]
+        seg: Option<PathBuf>,
     },
     /// List the STARA/STARB file directory.
     Dir {
@@ -75,11 +81,11 @@ enum Cmd {
         game_dir: PathBuf,
         /// Emulated CPU speed in MHz (F12 toggles turbo while playing). 12-16
         /// plays well; parts of the game run faster with the CPU, so much more
-        /// is too fast. 4.77 is the original IBM PC.
-        #[arg(long, default_value_t = 12.0)]
+        /// is too fast. 4.77 is the original IBM PC. 0.1 to 1000.
+        #[arg(long, default_value_t = 12.0, value_parser = mhz)]
         mhz: f64,
-        /// Initial window size as a multiple of 320x240.
-        #[arg(long, default_value_t = 3)]
+        /// Initial window size as a multiple of 320x240 (1 to 16).
+        #[arg(long, default_value_t = 3, value_parser = clap::value_parser!(u32).range(1..=16))]
         scale: u32,
         /// Start from this state of the slot (see `starflight states`).
         #[arg(long)]
@@ -108,11 +114,12 @@ enum Cmd {
         /// Key script: characters, {enter} {esc} {space} {up} {f1}..., {wait MS}.
         #[arg(long, default_value = "")]
         keys: String,
-        /// Emulated time to run after the key script, in milliseconds.
-        #[arg(long, default_value_t = 5000.0)]
+        /// Emulated time to run after the key script, in milliseconds (at
+        /// most 24 hours).
+        #[arg(long, default_value_t = 5000.0, value_parser = run_ms)]
         run_ms: f64,
-        /// Emulated CPU speed in MHz.
-        #[arg(long, default_value_t = 4.77)]
+        /// Emulated CPU speed in MHz, 0.1 to 1000.
+        #[arg(long, default_value_t = 4.77, value_parser = mhz)]
         mhz: f64,
         /// Print the text screen whenever it changes.
         #[arg(long)]
@@ -148,12 +155,33 @@ fn positive_ms(s: &str) -> Result<f64, String> {
     }
 }
 
+/// An emulated run time: 0 to `MAX_MS` ms.
+fn run_ms(s: &str) -> Result<f64, String> {
+    match s.parse::<f64>() {
+        Ok(ms) if (0.0..=session::MAX_MS).contains(&ms) => Ok(ms),
+        _ => Err(format!("{s:?} is not a number of milliseconds from 0 to {} (24 hours)", session::MAX_MS)),
+    }
+}
+
+/// An emulated CPU speed: 0.1 to 1000 MHz.
+fn mhz(s: &str) -> Result<f64, String> {
+    match s.parse::<f64>() {
+        Ok(mhz) if (pc::MIN_CPU_MHZ..=pc::MAX_CPU_MHZ).contains(&mhz) => Ok(mhz),
+        _ => Err(format!("{s:?} is not a CPU speed from {} to {} MHz", pc::MIN_CPU_MHZ, pc::MAX_CPU_MHZ)),
+    }
+}
+
+/// Size of a game segment dump (`headless --dump-seg`).
+const SEGMENT_SIZE: usize = 0x10000;
+
 fn read_game_file(dir: &Path, name: &str) -> Result<Vec<u8>> {
     let path = dir.join(name);
     std::fs::read(&path).with_context(|| format!("reading {}", path.display()))
 }
 
-fn cmd_words(game_dir: &Path) -> Result<()> {
+/// STARFLT.COM from `game_dir`, if it is the build the addresses in
+/// `consts` belong to.
+fn read_known_com(game_dir: &Path) -> Result<Vec<u8>> {
     let com = read_game_file(game_dir, "STARFLT.COM")?;
     if com.len() != consts::STARFLT_COM_SIZE {
         bail!(
@@ -162,7 +190,11 @@ fn cmd_words(game_dir: &Path) -> Result<()> {
             consts::STARFLT_COM_SIZE
         );
     }
-    let seg = sfforth::segment_image(&com);
+    Ok(com)
+}
+
+fn cmd_words(game_dir: &Path) -> Result<()> {
+    let seg = sfforth::segment_image(&read_known_com(game_dir)?);
     let mut words = dict::decode_dictionary(&seg);
     words.sort_by_key(|w| w.cfa);
     println!("{:>4}  {:<10} {:<3} {:<6} {:>3}  name", "cfa", "kind", "voc", "source", "len");
@@ -197,9 +229,24 @@ fn cmd_words(game_dir: &Path) -> Result<()> {
     Ok(())
 }
 
-fn cmd_decompile(game_dir: &Path, word: &str) -> Result<()> {
-    let com = read_game_file(game_dir, "STARFLT.COM")?;
-    let seg = sfforth::segment_image(&com);
+/// Decompiles `word` from STARFLT.COM in `game_dir`, or from the segment
+/// dump `seg_file` (whose offset 0 is segment offset 0, where STARFLT.COM
+/// starts at 0x100).
+fn cmd_decompile(game_dir: &Path, seg_file: Option<&Path>, word: &str) -> Result<()> {
+    let seg = match seg_file {
+        Some(p) => {
+            let seg = std::fs::read(p).with_context(|| format!("reading {}", p.display()))?;
+            if seg.len() != SEGMENT_SIZE {
+                bail!(
+                    "{} is {} bytes, not a {SEGMENT_SIZE}-byte game segment dump (headless --dump-seg)",
+                    p.display(),
+                    seg.len()
+                );
+            }
+            seg
+        }
+        None => sfforth::segment_image(&read_known_com(game_dir)?),
+    };
     let words = dict::decode_dictionary(&seg);
     let names = sfforth::trace::Names::from_words(&words);
     let cfa = match words.iter().find(|w| w.name.eq_ignore_ascii_case(word)) {
@@ -289,7 +336,11 @@ fn cmd_headless(
         }
         saves.slot_dir(save)?
     } else {
-        saves.create(save, game_dir, true)?
+        let (dir, backup) = saves.create(save, game_dir, true)?;
+        if let Some(b) = backup {
+            eprintln!("recreating save {save:?}; its files were backed up to {}", b.display());
+        }
+        dir
     };
     let trace: Option<Box<dyn std::io::Write>> = match trace_forth {
         Some(p) => Some(Box::new(std::io::BufWriter::new(
@@ -300,6 +351,7 @@ fn cmd_headless(
     eprintln!("{}", credits::BANNER);
     let mut s = Session::new(&slot, mhz, trace)?;
     s.show_text = text;
+    s.machine.file_log = files.then(Vec::new);
     if let Some(name) = states.load {
         let backup = s.load_state(saves, save, name, &[])?;
         eprintln!(
@@ -365,7 +417,7 @@ fn cmd_headless(
     }
     if let Some(name) = states.save {
         if result.is_ok() {
-            saves.save_state(save, Some(name), m, states.description)?;
+            s.save_state(saves, save, Some(name), states.description)?;
             eprintln!("saved state {name:?} of save {save:?}");
         } else {
             eprintln!("not saving state {name:?}: the run did not finish");
@@ -404,10 +456,13 @@ fn main() -> Result<()> {
     let saves = Saves::new(cli.saves_dir);
     match cli.cmd {
         Cmd::Words { game_dir } => cmd_words(&game_dir),
-        Cmd::Decompile { word, game_dir } => cmd_decompile(&game_dir, &word),
+        Cmd::Decompile { word, game_dir, seg } => cmd_decompile(&game_dir, seg.as_deref(), &word),
         Cmd::Dir { game_dir } => cmd_dir(&game_dir),
         Cmd::NewSave { name, from, replace } => {
-            let dir = saves.create(&name, &from, replace)?;
+            let (dir, backup) = saves.create(&name, &from, replace)?;
+            if let Some(b) = backup {
+                println!("backed up save {name:?} to {}", b.display());
+            }
             println!("created save {name:?} in {} from {}", dir.display(), from.display());
             Ok(())
         }
@@ -434,11 +489,11 @@ fn main() -> Result<()> {
             }
             let states = saves.states(&name)?;
             let width = states.iter().map(|s| s.name.len()).max().unwrap_or(0).max(4);
-            println!("{:<width$}  {:<23}  {:>10}  description", "name", "created", "emulated");
+            println!("{:<width$}  {:<27}  {:>10}  description", "name", "created", "emulated");
             for s in &states {
                 let emulated = format!("{:.1}s", s.emulated_s);
                 let desc = s.description.as_deref().unwrap_or("");
-                println!("{:<width$}  {:<23}  {emulated:>10}  {desc}", s.name, s.created);
+                println!("{:<width$}  {:<27}  {emulated:>10}  {desc}", s.name, s.created);
             }
             Ok(())
         }
@@ -489,7 +544,7 @@ fn main() -> Result<()> {
                 let b = saves.backup(&save)?;
                 eprintln!("backed up save {save:?} to {}", b.display());
             } else {
-                let dir = saves.create(&save, &game_dir, false)?;
+                let (dir, _) = saves.create(&save, &game_dir, false)?;
                 eprintln!("created save {save:?} in {} from {}", dir.display(), game_dir.display());
             }
             eprintln!("{}", credits::BANNER);

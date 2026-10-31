@@ -15,8 +15,12 @@ set -eu
 dir=${1:-$(dirname "$0")/../target/sst-8088}
 mkdir -p "$dir/v2"
 cd "$dir"
-curl -sfL "https://api.github.com/repos/SingleStepTests/8088/git/trees/main?recursive=1" |
-    grep -o '"path": *"\(v2/[^"]*\|README.md\|LICENSE\)"' |
+curl -sfL -o tree.json "https://api.github.com/repos/SingleStepTests/8088/git/trees/main?recursive=1"
+grep -o '"path": *"\(v2/[^"]*\|README.md\|LICENSE\)"' tree.json |
     sed 's/.*"\([^"]*\)"$/\1/' > files.txt
+if ! grep -q '^v2/' files.txt; then
+    echo "no v2/ files in the repository listing (see $dir/tree.json)" >&2
+    exit 1
+fi
 xargs -P 8 -I{} curl -sfL --retry 3 -o {} "https://raw.githubusercontent.com/SingleStepTests/8088/main/{}" < files.txt
 echo "$(ls v2 | wc -l) files in $dir/v2; set SST_8088_DIR=$dir/v2 if not using the default"

@@ -34,6 +34,10 @@ impl ModRm {
 
 const MAX_PREFIXES: usize = 16;
 
+fn is_prefix(b: u8) -> bool {
+    matches!(b, 0x26 | 0x2e | 0x36 | 0x3e | 0xf0 | 0xf2 | 0xf3)
+}
+
 impl Cpu {
     #[inline]
     fn fetch8<B: Bus + ?Sized>(&mut self, bus: &mut B) -> u8 {
@@ -148,11 +152,19 @@ impl Cpu {
         r != (cc & 1 != 0)
     }
 
-    fn invalid(&mut self, bus: &mut (impl Bus + ?Sized), op: u8) -> Step {
-        let next = bus.read8(phys(self.instr_cs, self.ip));
-        self.ip = self.instr_ip;
-        self.sregs[CS] = self.instr_cs;
-        Step::Invalid { cs: self.instr_cs, ip: self.instr_ip, bytes: [op, next] }
+    /// Rewinds to the instruction at `instr_cs:instr_ip` and reports its
+    /// opcode and the byte after it, found again past the prefixes; a run of
+    /// more than MAX_PREFIXES prefixes reports its first two bytes.
+    fn invalid(&mut self, bus: &mut (impl Bus + ?Sized)) -> Step {
+        let (cs, ip) = (self.instr_cs, self.instr_ip);
+        let at = (0..=MAX_PREFIXES as u16)
+            .map(|i| ip.wrapping_add(i))
+            .find(|&a| !is_prefix(bus.read8(phys(cs, a))))
+            .unwrap_or(ip);
+        let bytes = [bus.read8(phys(cs, at)), bus.read8(phys(cs, at.wrapping_add(1)))];
+        self.ip = ip;
+        self.sregs[CS] = cs;
+        Step::Invalid { cs, ip, bytes }
     }
 
     /// Executes one instruction (one iteration of a REP string instruction).
@@ -180,7 +192,7 @@ impl Cpu {
             cycles += 2;
             prefixes += 1;
             if prefixes > MAX_PREFIXES {
-                return self.invalid(bus, b);
+                return self.invalid(bus);
             }
         };
         self.exec(bus, op, cycles)
@@ -344,7 +356,7 @@ impl Cpu {
                 let m = self.modrm(bus);
                 match m.rm {
                     Rm::Mem(_, off) => self.regs[m.reg as usize] = off,
-                    Rm::Reg(_) => return self.invalid(bus, op),
+                    Rm::Reg(_) => return self.invalid(bus),
                 }
                 cyc += 2 + m.ea;
             }
@@ -360,6 +372,10 @@ impl Cpu {
             }
             0x8f => {
                 let m = self.modrm(bus);
+                // 8F /1-/7 are undefined.
+                if m.reg != 0 {
+                    return self.invalid(bus);
+                }
                 let v = self.pop(bus) as u32;
                 self.set_rm(bus, m.rm, W::W, v);
                 cyc += 17 + m.ea;
@@ -455,7 +471,7 @@ impl Cpu {
             0xc4 | 0xc5 => {
                 let m = self.modrm(bus);
                 let Rm::Mem(s, o) = m.rm else {
-                    return self.invalid(bus, op);
+                    return self.invalid(bus);
                 };
                 let off = self.read16(bus, s, o);
                 let seg = self.read16(bus, s, o.wrapping_add(2));
@@ -466,6 +482,10 @@ impl Cpu {
             0xc6 | 0xc7 => {
                 let w = if op & 1 == 0 { W::B } else { W::W };
                 let m = self.modrm(bus);
+                // C6/C7 /1-/7 are undefined.
+                if m.reg != 0 {
+                    return self.invalid(bus);
+                }
                 let imm = if w == W::B { self.fetch8(bus) as u32 } else { self.fetch16(bus) as u32 };
                 self.set_rm(bus, m.rm, w, imm);
                 cyc += if m.is_mem() { 10 + m.ea } else { 4 };
@@ -507,7 +527,7 @@ impl Cpu {
                 let count = if op & 2 == 0 { 1 } else { self.reg8(1) };
                 let v = self.get_rm(bus, m.rm, w);
                 let Some(res) = self.shift(m.reg, v, count, w) else {
-                    return self.invalid(bus, op);
+                    return self.invalid(bus);
                 };
                 self.set_rm(bus, m.rm, w, res);
                 cyc += if m.is_mem() { 15 + m.ea } else { 2 };
@@ -639,12 +659,12 @@ impl Cpu {
                         let number = self.fetch8(bus);
                         return Step::Trap { number, cycles: cyc + 4 };
                     }
-                    _ => return self.invalid(bus, op),
+                    _ => return self.invalid(bus),
                 }
             }
             0xff => return self.group5(bus, cyc),
             // 0F (POP CS), 60-6F, C0/C1, C8/C9, D6 (SALC), D8-DF (ESC), F1.
-            _ => return self.invalid(bus, op),
+            _ => return self.invalid(bus),
         }
         Step::Executed { cycles: cyc }
     }
@@ -721,7 +741,7 @@ impl Cpu {
             }
             3 | 5 => {
                 let Rm::Mem(s, o) = m.rm else {
-                    return self.invalid(bus, 0xff);
+                    return self.invalid(bus);
                 };
                 let off = self.read16(bus, s, o);
                 let seg = self.read16(bus, s, o.wrapping_add(2));
@@ -748,7 +768,7 @@ impl Cpu {
                 self.push(bus, v);
                 cyc += 16 + m.ea;
             }
-            _ => return self.invalid(bus, 0xff),
+            _ => return self.invalid(bus),
         }
         Step::Executed { cycles: cyc }
     }
@@ -812,5 +832,93 @@ impl Cpu {
             }
         }
         if compares { 22 } else { 17 }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 1 MiB of RAM and no I/O devices.
+    struct Ram(Vec<u8>);
+
+    impl Bus for Ram {
+        fn read8(&mut self, addr: u32) -> u8 {
+            self.0[addr as usize]
+        }
+        fn write8(&mut self, addr: u32, val: u8) {
+            self.0[addr as usize] = val;
+        }
+        fn io_read8(&mut self, _port: u16) -> u8 {
+            0xff
+        }
+        fn io_write8(&mut self, _port: u16, _val: u8) {}
+    }
+
+    const CODE_SEG: u16 = 0x1000;
+
+    /// A CPU at 1000:0100 running `code`, with SS:SP = 2000:0100.
+    fn rig(code: &[u8]) -> (Cpu, Ram) {
+        let mut bus = Ram(vec![0; 1 << 20]);
+        let at = phys(CODE_SEG, 0x100) as usize;
+        bus.0[at..at + code.len()].copy_from_slice(code);
+        let mut cpu = Cpu::new();
+        cpu.sregs = [0x3000, CODE_SEG, 0x2000, 0x3000];
+        cpu.ip = 0x100;
+        cpu.regs[SP] = 0x100;
+        (cpu, bus)
+    }
+
+    fn invalid_bytes(code: &[u8]) -> [u8; 2] {
+        let (mut cpu, mut bus) = rig(code);
+        match cpu.step(&mut bus) {
+            Step::Invalid { cs, ip, bytes } => {
+                assert_eq!((cs, ip), (CODE_SEG, 0x100), "{code:02X?}");
+                assert_eq!((cpu.sregs[CS], cpu.ip), (CODE_SEG, 0x100), "{code:02X?}");
+                bytes
+            }
+            s => panic!("{code:02X?}: {s:?}"),
+        }
+    }
+
+    #[test]
+    fn invalid_reports_the_opcode_and_the_byte_after_it() {
+        // Opcodes found invalid after their ModRM and displacement were read.
+        assert_eq!(invalid_bytes(&[0x8d, 0xc0, 0x90]), [0x8d, 0xc0]);
+        assert_eq!(invalid_bytes(&[0x2e, 0xf3, 0xc4, 0xc0, 0x90]), [0xc4, 0xc0]);
+        assert_eq!(invalid_bytes(&[0xd0, 0xb6, 0x34, 0x12, 0x90]), [0xd0, 0xb6]);
+        assert_eq!(invalid_bytes(&[0xfe, 0x10, 0x90]), [0xfe, 0x10]);
+        assert_eq!(invalid_bytes(&[0x26, 0xff, 0xff, 0x90]), [0xff, 0xff]);
+        assert_eq!(invalid_bytes(&[0xc6, 0x8e, 0x34, 0x12, 0x56, 0x90]), [0xc6, 0x8e]);
+        assert_eq!(invalid_bytes(&[0x0f, 0x05]), [0x0f, 0x05]);
+        let mut prefixes = vec![0x26; MAX_PREFIXES + 1];
+        prefixes.push(0x90);
+        assert_eq!(invalid_bytes(&prefixes), [0x26, 0x26]);
+        // Sixteen prefixes still make an instruction.
+        let (mut cpu, mut bus) = rig(&[[0x26; MAX_PREFIXES].as_slice(), &[0x90]].concat());
+        assert!(matches!(cpu.step(&mut bus), Step::Executed { .. }));
+    }
+
+    #[test]
+    fn undefined_pop_and_mov_immediate_forms_are_invalid() {
+        for reg in 1..8u8 {
+            // 8F /reg with a register operand; POP would move SP.
+            let (mut cpu, mut bus) = rig(&[0x8f, 0xc0 | reg << 3]);
+            assert!(matches!(cpu.step(&mut bus), Step::Invalid { .. }), "8F /{reg}");
+            assert_eq!(cpu.regs[SP], 0x100);
+            // C6 /reg to [BX], C7 /reg to AX.
+            let (mut cpu, mut bus) = rig(&[0xc6, reg << 3 | 7, 0x55]);
+            assert!(matches!(cpu.step(&mut bus), Step::Invalid { .. }), "C6 /{reg}");
+            assert_eq!(bus.0[phys(0x3000, 0) as usize], 0);
+            let (mut cpu, mut bus) = rig(&[0xc7, 0xc0 | reg << 3, 0x34, 0x12]);
+            assert!(matches!(cpu.step(&mut bus), Step::Invalid { .. }), "C7 /{reg}");
+            assert_eq!(cpu.regs[AX], 0);
+        }
+        // The /0 forms run.
+        let (mut cpu, mut bus) = rig(&[0xc7, 0xc0, 0x34, 0x12, 0x8f, 0xc3]);
+        bus.0[phys(0x2000, 0x100) as usize] = 0x78;
+        assert!(matches!(cpu.step(&mut bus), Step::Executed { .. }));
+        assert!(matches!(cpu.step(&mut bus), Step::Executed { .. }));
+        assert_eq!((cpu.regs[AX], cpu.regs[BX], cpu.regs[SP]), (0x1234, 0x0078, 0x102));
     }
 }

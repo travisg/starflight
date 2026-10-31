@@ -18,8 +18,9 @@ This project builds directly on other people's work:
 
 - **Sebastian Macke**, [starflight-reverse](https://github.com/s-macke/starflight-reverse):
   the disassembly, Forth-to-C transpiler, word names and data formats of the
-  game. The code addresses, DOS interrupt usage and the patch that enables
-  the game's built-in Forth interpreter all come from that work.
+  game. The code addresses, the dictionary name encoding, the STARA/STARB
+  directory layout and the list of DOS functions the game calls all come
+  from that work.
 - **Jeremy Penner (SpindleyQ)**, [StarflightVM](https://git.information-superhighway.net/SpindleyQ/starflightvm):
   analysis of the boot code and interrupt handlers, the Tandy detection
   detail, and ideas for the debugging tools.
@@ -37,9 +38,11 @@ prints the same list.
 
 ## Status
 
-The game boots and runs: the display menu (Black/white, RGB, Composite,
-Hercules, EGA), and with EGA the Binary Systems credits, the title screen,
-the Interstel Police warning and the starport. Only EGA is emulated so far.
+The game boots and plays with EGA: the display menu, the Binary Systems
+credits, the title screen, the Interstel Police warning, the starport, launch
+and the security check, flight, landing on planets, and SAVE GAME. The
+menu's other displays (Black/white, RGB, Composite, Hercules) are not
+emulated yet.
 The 8086 core passes all 2,559,500 documented-instruction tests of the
 SingleStepTests 8088 suite. Remaining milestones:
 
@@ -49,8 +52,8 @@ SingleStepTests 8088 suite. Remaining milestones:
 
 ## Building
 
-Requires stable Rust. Later milestones also need the SDL2 development
-libraries (`libsdl2-dev` on Debian/Ubuntu).
+Requires stable Rust and the SDL2 development libraries (`libsdl2-dev` on
+Debian/Ubuntu).
 
 ```sh
 cargo build --release
@@ -99,7 +102,9 @@ starflight play --load-state NAME # start from a snapshot (see below)
 The machine is paced to real time. Delays the game times with its own clock
 (the timer interrupt) keep their length at any `--mhz`, but other parts run
 as fast as the CPU: 12-16 MHz plays well, 32 is too fast. `headless` defaults
-to 4.77 MHz so scripted runs stay reproducible.
+to 4.77 MHz, so a script's timing does not depend on the play speed. Runs are
+not bit-for-bit repeatable: the BIOS tick count and the DOS date and time
+start from the host clock, and the game can see them.
 
 Keys in the window:
 
@@ -113,7 +118,8 @@ Keys in the window:
 | Ctrl+F11 / Ctrl+F12 | Save a snapshot / load the slot's newest snapshot (emulator). |
 
 The game does not use F1-F10. The arrow keys, Home/End/PgUp/PgDn and the
-numeric keypad are the XT keypad.
+numeric keypad are the XT keypad. Keys held down when the window loses focus
+are released.
 
 ### Save slots
 
@@ -129,10 +135,12 @@ starflight new-save old --from /path/to/PLAY    # continue an existing game
 starflight saves                                # list slots
 starflight saves mygame                         # list a slot's backups
 starflight restore mygame 20261030-231502       # put a backup back
+starflight new-save mygame --from game/START --replace   # start the slot over
 ```
 
 Restoring backs up the current files first and keeps the backup it restored
-from.
+from. `new-save --replace` backs up the slot's files before replacing them,
+and keeps the slot's states.
 
 ### Snapshots
 
@@ -141,12 +149,18 @@ timers, keyboard, DOS) together with the slot's STARA.COM and STARB.COM at
 that instant, so a game can be resumed from any moment rather than only from
 SAVE GAME. Each state belongs to a slot and lives in
 `saves/<slot>/states/<name>/`: `machine.bin.gz`, the two game files, and
-`info.txt` (UTC creation time, emulated time, instructions executed, and an
-optional description).
+`info.txt` (UTC creation time to the millisecond, emulated time,
+instructions executed, an optional description, and the launch security
+check if it was on screen).
 
 In the window, Ctrl+F11 saves a state named `quick-YYYYMMDD-HHMMSS` (UTC)
 and shows the name in the title bar for a few seconds; Ctrl+F12 loads the
 slot's most recent state. Ctrl itself still reaches the game.
+
+A state saved within two minutes (emulated) of the launch security check
+appearing keeps it: after loading, the window title and the terminal show
+the code again and `{code}` works in a key script. The code is worked out
+again from the wheel positions stored in `info.txt`.
 
 ```sh
 starflight states mygame                                      # list a slot's states
@@ -161,9 +175,9 @@ in their place with the times they had. If that fails partway, the machine
 and the slot's files go back to how they were; if even that fails, the
 session stops and names the backup to copy them from. The slot's STARFLT.COM
 must be the known 54183-byte build. The CPU speed is the session's `--mhz`,
-not the one the state was saved at. Ctrl, Shift and Alt that were held down when the
-state was saved (a Ctrl+F11 state has Ctrl down) are released on load,
-unless they are held on the host. A name already in use is refused; remove
+not the one the state was saved at. Ctrl, Shift and Alt that were held down
+when the state was saved (a Ctrl+F11 state has Ctrl down) are released on
+load, unless they are held on the host. A name already in use is refused; remove
 the state's directory to reuse it. A state written by a build with another
 snapshot format is refused with a message naming both versions.
 
@@ -171,8 +185,8 @@ snapshot format is refused with a message naming both versions.
 
 `headless` runs the game for a while with scripted keys and prints the text
 screen; it recreates its slot (`headless`) from the game directory each run
-unless `--keep` or `--load-state` is given (recreating leaves the slot's
-states alone).
+unless `--keep` or `--load-state` is given. Recreating backs up the slot's
+files first (a slot keeps its last 20 backups) and leaves its states alone.
 
 ```sh
 starflight headless --run-ms 8000 --text
@@ -193,21 +207,38 @@ Keys are typed one at a time, each after the game has taken the previous one
 (its keyboard handler drops buffered keys). `--trace-forth` writes every Forth
 word the game executes (return-stack pointer, code field address, name);
 `--files` lists the game's file transfers by directory entry; `--shot-every
-MS` writes a PNG every MS of emulated time into `screenshots/` (gitignored). If the machine
-stops (an unknown opcode, port or DOS function), the report shows where, the
-registers and the most recent Forth words. `--load-state NAME` starts from a
+MS` writes a PNG every MS of emulated time into `screenshots/` (gitignored).
+If the machine stops (an unknown opcode, port, BIOS or DOS function, the trap
+flag being set, or a BIOS or DOS call pointed at display memory or the ROMs),
+the report shows where, the registers and the most recent Forth words.
+Hardware this PC lacks (a Hercules or CGA card's ports, serial and parallel
+ports, registers an EGA does not have) reads as FFh and is listed at the end
+of the run: choosing a display other than EGA at the game's menu shows up as
+`absent-hardware port accesses: 3D8x2 3D9x2`. `--load-state NAME` starts from a
 state of the slot; `--save-state NAME` (with an optional `--description`)
 saves one when the run finishes, but not if the machine stopped or the game
 exited. The name is checked before the run starts.
+
+Arguments are checked before the slot is touched: `--mhz` must be 0.1 to
+1000; `--run-ms`, `{wait MS}` and `{hold KEY MS}` 0 to 86,400,000 (24 hours
+emulated); `--shot-every` above 0; `--scale` 1 to 16; and every `{` in a key
+script needs its `}`. A bad value is refused with a message naming it, for
+example `"0" is not a CPU speed from 0.1 to 1000 MHz`.
 
 ### Tools
 
 ```sh
 starflight words      # every word in STARFLT.COM's dictionary, with its type
 starflight decompile COLD   # a colon definition's threaded code (name or hex CFA)
+starflight decompile EF58 --seg seg.bin   # a word in a segment dump, overlays included
 starflight dir        # the STARA/STARB file directory (FILE# table)
 starflight credits    # who made the game and whose work this builds on
 ```
+
+`words` and `decompile` need the known 54183-byte STARFLT.COM. Overlay words
+are only in memory while their overlay is loaded and mostly have no names:
+dump the game segment at the right moment with `headless --dump-seg seg.bin`
+(65,536 bytes) and decompile them by hex CFA with `--seg`.
 
 `words` prints each word's code field address, kind (CODE, COLON, VAR, CONST,
 or `DOES:xxxx` for other defining words), vocabulary chain, where the name came

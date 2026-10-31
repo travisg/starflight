@@ -21,7 +21,8 @@ pub struct Pic {
     irr: u8,
     isr: u8,
     pub imr: u8,
-    base: u8,
+    /// Vector of IRQ0, a multiple of 8.
+    pub(crate) base: u8,
     init: Init,
     single: bool,
     icw4: bool,
@@ -38,6 +39,14 @@ impl Pic {
     /// As the BIOS leaves it: vectors 08h-0Fh, IRQ0, IRQ1 and IRQ6 unmasked.
     pub fn new() -> Self {
         Pic { irr: 0, isr: 0, imr: 0xbc, base: 8, init: Init::Ready, single: true, icw4: true, read_isr: false }
+    }
+
+    /// Checks restored state: ICW2 keeps the vector base a multiple of 8.
+    pub(crate) fn check(&self) -> Result<(), String> {
+        if self.base & 7 != 0 {
+            return Err(format!("PIC vector base {:02X}h is not a multiple of 8", self.base));
+        }
+        Ok(())
     }
 
     pub fn raise(&mut self, irq: u8) {

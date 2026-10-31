@@ -9,8 +9,10 @@
 //! Memory: 640 KiB RAM, video memory A0000-BFFFF (the adapter decodes it),
 //! the EGA BIOS signature at C0000 and the system BIOS ROM at F0000 (both
 //! read-only). Ports of hardware this PC does not have (mono adapter,
-//! printers, serial ports, game port, DMA) read 0xFF and ignore writes, as an
-//! empty bus would, and are counted. Any other unknown port stops the machine.
+//! printers, serial ports, game port, DMA), and accesses in the adapter's
+//! 3C0-3DF that no EGA register answers (such as the CGA-only 3D8/3D9), read
+//! 0xFF and ignore writes, as an empty bus would, and are counted. Any other
+//! unknown port stops the machine.
 
 use crate::Stop;
 use crate::keyboard::KeyboardCtl;
@@ -45,7 +47,8 @@ pub struct PcBus {
     /// Speaker changes with their master tick, when recording is on.
     #[serde(skip)]
     pub speaker_log: Option<Vec<(u64, SpeakerState)>>,
-    /// Accesses to ports of absent hardware, by port.
+    /// Accesses to ports of absent hardware and to registers the video
+    /// adapter does not have, by port.
     #[serde(skip)]
     pub absent_ports: BTreeMap<u16, u64>,
     /// A device's next event time may have changed (PIT reprogrammed,
@@ -101,6 +104,12 @@ impl PcBus {
         }
     }
 
+    /// Counts an access nothing answers on this PC; reads see 0xFF.
+    fn absent(&mut self, port: u16) -> u8 {
+        *self.absent_ports.entry(port).or_default() += 1;
+        0xff
+    }
+
     fn unknown_port(&mut self, port: u16, write: Option<u8>) {
         if self.stop.is_none() {
             self.stop = Some(Stop::UnknownPort { port, write });
@@ -148,15 +157,9 @@ impl cpu8086::Bus for PcBus {
             }
             0x3c0..=0x3df => match self.video.port_read(port, now) {
                 Some(v) => v,
-                None => {
-                    self.unknown_port(port, None);
-                    0xff
-                }
+                None => self.absent(port),
             },
-            _ if absent_hardware(port) => {
-                *self.absent_ports.entry(port).or_default() += 1;
-                0xff
-            }
+            _ if absent_hardware(port) => self.absent(port),
             _ => {
                 self.unknown_port(port, None);
                 0xff
@@ -178,7 +181,8 @@ impl cpu8086::Bus for PcBus {
             0x61 => {
                 let old = self.port61;
                 self.port61 = v;
-                self.pit.ch[2].gate = v & 1 != 0;
+                let t = self.pit_now();
+                self.pit.set_gate(2, v & 1 != 0, t);
                 // Bit 7 pulsed high acknowledges the keyboard.
                 if v & 0x80 != 0 && old & 0x80 == 0 {
                     let now = self.now();
@@ -192,11 +196,35 @@ impl cpu8086::Bus for PcBus {
             0x63 => {}
             0x3c0..=0x3df => {
                 if !self.video.port_write(port, v) {
-                    self.unknown_port(port, Some(v));
+                    self.absent(port);
                 }
             }
-            _ if absent_hardware(port) => *self.absent_ports.entry(port).or_default() += 1,
+            _ if absent_hardware(port) => {
+                self.absent(port);
+            }
             _ => self.unknown_port(port, Some(v)),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cpu8086::Bus;
+
+    #[test]
+    fn unanswered_adapter_ports_count_as_absent() {
+        let mut b = PcBus::new();
+        b.io_write8(0x3d8, 0x09);
+        b.io_write8(0x3d8, 0x09);
+        assert_eq!(b.io_read8(0x3c5), 0xff);
+        b.io_write8(0x3c4, 2);
+        b.io_write8(0x3c5, 0x0f);
+        b.io_read8(0x3da);
+        assert_eq!(b.io_read8(0x201), 0xff);
+        assert_eq!(b.stop, None);
+        assert_eq!(b.absent_ports, BTreeMap::from([(0x201, 1), (0x3c5, 1), (0x3d8, 2)]));
+        b.io_read8(0x3e0);
+        assert_eq!(b.stop, Some(Stop::UnknownPort { port: 0x3e0, write: None }));
     }
 }

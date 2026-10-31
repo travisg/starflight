@@ -17,7 +17,7 @@ use super::{
     ATTR_MODE, ATTR_OVERSCAN, CGA_MEM_SIZE, CRTC_CURSOR_END, CRTC_CURSOR_HI, CRTC_CURSOR_LO, CRTC_CURSOR_START,
     CRTC_START_HI, CRTC_START_LO, SWITCHES, Video, font,
 };
-use crate::hle::{Hle, bda, rd8, rd16, wr8, wr16};
+use crate::hle::{DISPLAY, Hle, bda, rd8, rd16, wr8, wr16};
 use cpu8086::{AX, BX, CX, Cpu, DX, ES, phys};
 
 const ROWS: usize = 25;
@@ -73,6 +73,11 @@ pub(super) fn int10(v: &mut Video, cpu: &mut Cpu, ram: &mut [u8]) -> Hle {
             0x01 => v.write_attr(ATTR_OVERSCAN, bh),
             0x02 => {
                 let table = phys(cpu.sregs[ES], cpu.regs[DX]);
+                if (0..17).any(|i| DISPLAY.contains(&((table + i) & 0xfffff))) {
+                    return Hle::Unsupported(format!(
+                        "INT 10h AX=1002h: palette table in display memory at {table:05X}"
+                    ));
+                }
                 for i in 0..16 {
                     v.write_attr(i, rd8(ram, table + i as u32));
                 }
