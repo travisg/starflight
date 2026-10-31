@@ -84,15 +84,28 @@ Pass `--game-dir` to use another copy.
 ```sh
 starflight play                   # save slot "default", created from game/START
 starflight play --save mygame     # another slot
-starflight play --mhz 8           # emulated CPU speed (default 4.77, the IBM PC)
+starflight play --mhz 16          # emulated CPU speed (default 12; 4.77 is the IBM PC)
 starflight play --load-state NAME # start from a snapshot (see below)
 ```
 
-The machine is paced to real time; the game's own clock runs off the
-emulated timer, so timed delays keep their original length at any `--mhz`.
-In the window: F11 toggles fullscreen, F12 toggles turbo, Pause pauses,
-Ctrl+F11 saves a snapshot and Ctrl+F12 loads the latest one. The arrow keys,
-Home/End/PgUp/PgDn and the numeric keypad are the XT keypad.
+The machine is paced to real time. Delays the game times with its own clock
+(the timer interrupt) keep their length at any `--mhz`, but other parts run
+as fast as the CPU: 12-16 MHz plays well, 32 is too fast. `headless` defaults
+to 4.77 MHz so scripted runs stay reproducible.
+
+Keys in the window:
+
+| Key | Does |
+| --- | --- |
+| Esc | The game's Game Options panel: save game, resume, change display mode, end game unsaved. It takes a few seconds to appear (the game writes its working state to disk first). |
+| Ctrl+S | The game's sound on/off. |
+| F11 | Fullscreen (emulator). |
+| F12 | Turbo (emulator). |
+| Pause | Pause (emulator). |
+| Ctrl+F11 / Ctrl+F12 | Save a snapshot / load the slot's newest snapshot (emulator). |
+
+The game does not use F1-F10. The arrow keys, Home/End/PgUp/PgDn and the
+numeric keypad are the XT keypad.
 
 ### Save slots
 

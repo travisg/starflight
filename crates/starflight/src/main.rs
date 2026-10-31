@@ -73,8 +73,10 @@ enum Cmd {
         save: String,
         #[arg(long, default_value = DEFAULT_GAME_DIR)]
         game_dir: PathBuf,
-        /// Emulated CPU speed in MHz (F12 toggles turbo while playing).
-        #[arg(long, default_value_t = 4.77)]
+        /// Emulated CPU speed in MHz (F12 toggles turbo while playing). 12-16
+        /// plays well; parts of the game run faster with the CPU, so much more
+        /// is too fast. 4.77 is the original IBM PC.
+        #[arg(long, default_value_t = 12.0)]
         mhz: f64,
         /// Initial window size as a multiple of 320x240.
         #[arg(long, default_value_t = 3)]
