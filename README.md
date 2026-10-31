@@ -131,6 +131,9 @@ starflight saves mygame                         # list a slot's backups
 starflight restore mygame 20261030-231502       # put a backup back
 ```
 
+Restoring backs up the current files first and keeps the backup it restored
+from.
+
 ### Snapshots
 
 A snapshot (state) holds the whole emulated PC (CPU, memory, video adapter,
@@ -154,9 +157,11 @@ starflight headless --load-state credits --keys '{space}' --run-ms 20000
 
 Loading a state first backs up the slot's files (each load makes a backup,
 and a slot keeps its last 20), then puts the state's STARA.COM and STARB.COM
-in their place with the times they had. The slot's STARFLT.COM must be the
-known 54183-byte build. The CPU speed is the session's `--mhz`, not the one
-the state was saved at. Ctrl, Shift and Alt that were held down when the
+in their place with the times they had. If that fails partway, the machine
+and the slot's files go back to how they were; if even that fails, the
+session stops and names the backup to copy them from. The slot's STARFLT.COM
+must be the known 54183-byte build. The CPU speed is the session's `--mhz`,
+not the one the state was saved at. Ctrl, Shift and Alt that were held down when the
 state was saved (a Ctrl+F11 state has Ctrl down) are released on load,
 unless they are held on the host. A name already in use is refused; remove
 the state's directory to reuse it. A state written by a build with another

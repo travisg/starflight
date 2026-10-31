@@ -44,7 +44,7 @@ impl W {
 
 #[inline]
 fn parity(v: u32) -> bool {
-    (v as u8).count_ones() % 2 == 0
+    (v as u8).count_ones().is_multiple_of(2)
 }
 
 impl Cpu {

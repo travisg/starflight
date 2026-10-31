@@ -13,7 +13,7 @@
 //! F11 and F12 never reach the game; Ctrl does, as on the XT.
 
 use crate::audio::{SAMPLE_RATE, Synth};
-use crate::saves::Saves;
+use crate::saves::{Saves, SlotInconsistent};
 use crate::session::Session;
 use anyhow::{Result, anyhow};
 use pc::{Machine, Stop};
@@ -213,6 +213,7 @@ pub fn run(mut s: Session, scale: u32, saves: &Saves, slot: &str) -> Result<()> 
                                 stopped = None;
                                 format!("loaded {}", st.name)
                             }
+                            Err(e) if e.downcast_ref::<SlotInconsistent>().is_some() => return Err(e),
                             Err(e) => {
                                 eprintln!("loading state {:?} failed: {e:#}", st.name);
                                 "loading a state failed".to_string()
@@ -290,7 +291,7 @@ pub fn run(mut s: Session, scale: u32, saves: &Saves, slot: &str) -> Result<()> 
         }
 
         // The code-wheel answer while the launch prompt is likely up.
-        if s.machine.frames % 30 == 0 || security.is_none() {
+        if s.machine.frames.is_multiple_of(30) || security.is_none() {
             security = s.recent_security_challenge(SECURITY_SHOWN_MS);
         }
         if let Some(at) = s.security_shown_at().filter(|at| security_reported != Some(*at)) {
@@ -339,7 +340,7 @@ pub fn run(mut s: Session, scale: u32, saves: &Saves, slot: &str) -> Result<()> 
                 t.with_lock(None, |buf, pitch| {
                     for (y, row) in frame.pixels.chunks(w).enumerate() {
                         let line = &mut buf[y * pitch..y * pitch + w * 4];
-                        for (dst, p) in line.chunks_exact_mut(4).zip(row) {
+                        for (dst, p) in line.as_chunks_mut::<4>().0.iter_mut().zip(row) {
                             dst.copy_from_slice(&p.to_le_bytes());
                         }
                     }

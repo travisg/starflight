@@ -89,6 +89,7 @@ fn restore_rejects_other_data_and_keeps_host_side() {
     assert_eq!(m.bus.speaker_log.as_deref(), Some(&[][..]), "recording stays on, emptied");
     assert_eq!(m.dos.drive_dir, other_dir);
     assert_eq!(m.save_state(), snap);
+    drop(m);
     std::fs::remove_dir_all(&dir).unwrap();
 }
 
@@ -174,5 +175,7 @@ fn restore_replays_identically() {
     assert!(end_a == b.save_state(), "machine state after replay");
     let files_b: Vec<Vec<u8>> = DATA_FILES.iter().map(|f| std::fs::read(slot.join(f)).unwrap()).collect();
     assert!(files_a == files_b, "slot files after replay");
+    // Closes the game files first: on NFS an open file leaves a .nfs entry.
+    drop(b);
     std::fs::remove_dir_all(&dir).unwrap();
 }

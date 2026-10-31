@@ -493,6 +493,8 @@ mod tests {
             t.run_ms(100.0).unwrap();
             assert!(!ctrl_down(&t), "{state}: Ctrl released");
         }
+        // Closes the game files first: on NFS an open file leaves a .nfs entry.
+        drop((s, t));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

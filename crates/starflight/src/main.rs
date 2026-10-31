@@ -122,7 +122,7 @@ enum Cmd {
         screenshot: Option<PathBuf>,
         /// Also write a PNG every N ms of emulated time (after the key script)
         /// into --shots-dir.
-        #[arg(long)]
+        #[arg(long, value_parser = positive_ms)]
         shot_every: Option<f64>,
         #[arg(long, default_value = "screenshots")]
         shots_dir: PathBuf,
@@ -138,6 +138,14 @@ enum Cmd {
     },
     /// Show who made the game and whose work this emulator builds on.
     Credits,
+}
+
+/// A finite interval of more than 0 ms.
+fn positive_ms(s: &str) -> Result<f64, String> {
+    match s.parse::<f64>() {
+        Ok(ms) if ms.is_finite() && ms > 0.0 => Ok(ms),
+        _ => Err(format!("{s:?} is not a number of milliseconds above 0")),
+    }
 }
 
 fn read_game_file(dir: &Path, name: &str) -> Result<Vec<u8>> {
@@ -323,12 +331,10 @@ fn cmd_headless(
             Ok(())
         }
     });
-    if !text {
-        if let Some(lines) = s.machine.bus.video.text_lines() {
-            let last = lines.iter().rposition(|l| !l.trim().is_empty()).map_or(0, |i| i + 1);
-            for l in &lines[..last] {
-                println!("{}", l.trim_end());
-            }
+    if !text && let Some(lines) = s.machine.bus.video.text_lines() {
+        let last = lines.iter().rposition(|l| !l.trim().is_empty()).map_or(0, |i| i + 1);
+        for l in &lines[..last] {
+            println!("{}", l.trim_end());
         }
     }
     if let Some(p) = dump_seg {

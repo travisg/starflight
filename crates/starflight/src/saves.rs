@@ -72,6 +72,30 @@ impl StateInfo {
     }
 }
 
+/// A state load that failed partway and could not put the slot's files back:
+/// they no longer match the machine.
+#[derive(Debug)]
+pub struct SlotInconsistent {
+    pub slot: String,
+    /// The slot's files from before the load.
+    pub backup: PathBuf,
+    pub cause: String,
+}
+
+impl std::fmt::Display for SlotInconsistent {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(
+            f,
+            "save {:?} no longer matches the running game ({}); copy STARA.COM and STARB.COM back from {}",
+            self.slot,
+            self.cause,
+            self.backup.display()
+        )
+    }
+}
+
+impl std::error::Error for SlotInconsistent {}
+
 pub struct Saves {
     pub root: PathBuf,
 }
@@ -112,8 +136,14 @@ impl Saves {
         Ok(dir)
     }
 
-    /// Copies the slot's game files into a new timestamped backup.
+    /// Copies the slot's game files, with their times, into a new timestamped
+    /// backup.
     pub fn backup(&self, name: &str) -> Result<PathBuf> {
+        self.backup_keeping(name, None)
+    }
+
+    /// `backup`, never pruning the backup named `keep`.
+    fn backup_keeping(&self, name: &str, keep: Option<&str>) -> Result<PathBuf> {
         let dir = self.slot_dir(name)?;
         let stamp = timestamp();
         let mut dest = dir.join("backups").join(&stamp);
@@ -124,9 +154,9 @@ impl Saves {
         }
         std::fs::create_dir_all(&dest)?;
         for f in GAME_FILES {
-            copy_writable(&dir.join(f), &dest.join(f))?;
+            copy_with_mtime(&dir.join(f), &dest.join(f))?;
         }
-        self.prune_backups(name)?;
+        self.prune_backups(name, keep)?;
         Ok(dest)
     }
 
@@ -140,23 +170,26 @@ impl Saves {
         Ok(v)
     }
 
-    fn prune_backups(&self, name: &str) -> Result<()> {
+    /// Removes the oldest backups beyond `KEEP_BACKUPS`, skipping `keep`.
+    fn prune_backups(&self, name: &str, keep: Option<&str>) -> Result<()> {
         let all = self.backups(name)?;
         let dir = self.slot_dir(name)?.join("backups");
-        for old in all.iter().take(all.len().saturating_sub(KEEP_BACKUPS)) {
+        let excess = all.len().saturating_sub(KEEP_BACKUPS);
+        for old in all.iter().filter(|b| Some(b.as_str()) != keep).take(excess) {
             std::fs::remove_dir_all(dir.join(old))?;
         }
         Ok(())
     }
 
-    /// Puts a backup's files back into the slot (backing up the current ones first).
+    /// Puts a backup's files back into the slot (backing up the current ones
+    /// first). The backup itself is kept.
     pub fn restore(&self, name: &str, backup: &str) -> Result<()> {
         let dir = self.slot_dir(name)?;
         let src = dir.join("backups").join(backup);
         if !src.join("STARA.COM").is_file() {
             bail!("no backup {backup:?} in save {name:?}; see `starflight saves {name}`");
         }
-        self.backup(name)?;
+        self.backup_keeping(name, Some(backup))?;
         for f in GAME_FILES {
             copy_writable(&src.join(f), &dir.join(f))?;
         }
@@ -228,7 +261,9 @@ impl Saves {
     /// Restores state `name` of `slot` into `m`, which must be running that
     /// slot: backs up the slot's files, puts the state's STARA/STARB in
     /// their place and restores the machine. Returns the backup's directory.
-    /// On error the machine is as it was.
+    /// On error the machine and the slot's files are as they were, unless
+    /// putting the files back fails too: then the error is a
+    /// `SlotInconsistent`, and the machine must not run on.
     pub fn load_state(&self, slot: &str, name: &str, m: &mut Machine) -> Result<PathBuf> {
         let slot_dir = self.slot_dir(slot)?;
         check_name("state", name)?;
@@ -250,15 +285,16 @@ impl Saves {
         let data = std::fs::read(dir.join(STATE_MACHINE))?;
         let before = m.save_state();
         m.restore_state(&data).map_err(|e| anyhow!("state {name:?} of save {slot:?}: {e}"))?;
-        let put = || -> Result<PathBuf> {
-            let backup = self.backup(slot)?;
-            for f in STATE_FILES {
-                copy_with_mtime(&dir.join(f), &slot_dir.join(f))
-                    .with_context(|| format!("the slot's files before the load are in {}", backup.display()))?;
-            }
-            Ok(backup)
+        let undo = |m: &mut Machine| m.restore_state(&before).expect("restoring the machine's own snapshot");
+        let backup = self.backup(slot).inspect_err(|_| undo(m))?;
+        let Err(e) = STATE_FILES.iter().try_for_each(|f| copy_with_mtime(&dir.join(f), &slot_dir.join(f))) else {
+            return Ok(backup);
         };
-        put().inspect_err(|_| m.restore_state(&before).expect("restoring the machine's own snapshot"))
+        undo(m);
+        match STATE_FILES.iter().try_for_each(|f| put_back(&backup.join(f), &slot_dir.join(f))) {
+            Ok(()) => Err(e.context(format!("loading state {name:?} of save {slot:?}; the slot is as it was"))),
+            Err(r) => Err(SlotInconsistent { slot: slot.to_string(), backup, cause: format!("{e:#}; {r:#}") }.into()),
+        }
     }
 
     /// A slot's states, oldest first.
@@ -338,6 +374,19 @@ fn copy_with_mtime(src: &Path, dst: &Path) -> Result<()> {
         .open(dst)
         .and_then(|f| f.set_modified(mtime))
         .with_context(|| format!("setting the time of {}", dst.display()))
+}
+
+/// `copy_with_mtime`, skipped when `dst` already has `src`'s contents and
+/// time (it may be a file that could not be written at all).
+fn put_back(src: &Path, dst: &Path) -> Result<()> {
+    let same = || -> Option<bool> {
+        let mtime = |p: &Path| std::fs::metadata(p).and_then(|m| m.modified()).ok();
+        Some(mtime(src)? == mtime(dst)? && std::fs::read(src).ok()? == std::fs::read(dst).ok()?)
+    };
+    if same() == Some(true) {
+        return Ok(());
+    }
+    copy_with_mtime(src, dst)
 }
 
 /// The current UTC time as (year, month, day, hour, minute, second).
@@ -470,6 +519,64 @@ mod tests {
 
         std::fs::write(slot.join("STARFLT.COM"), b"short").unwrap();
         assert!(saves.load_state("s", &quick, &mut m).unwrap_err().to_string().contains("54183"));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn restoring_the_oldest_backup_keeps_it() {
+        let dir = scratch_dir("restore-oldest");
+        let saves = Saves::new(dir.join("saves"));
+        fake_slot(&saves, &dir);
+        let slot = saves.slot_dir("s").unwrap();
+        let names: Vec<String> = (0..KEEP_BACKUPS).map(|i| format!("20260101-0000{i:02}")).collect();
+        for n in &names {
+            let b = slot.join("backups").join(n);
+            std::fs::create_dir_all(&b).unwrap();
+            for f in GAME_FILES {
+                std::fs::write(b.join(f), format!("{f} {n}")).unwrap();
+            }
+        }
+        saves.restore("s", &names[0]).unwrap();
+        assert_eq!(std::fs::read_to_string(slot.join("STARA.COM")).unwrap(), format!("STARA.COM {}", names[0]));
+        let after = saves.backups("s").unwrap();
+        assert_eq!(after.len(), KEEP_BACKUPS);
+        assert!(after.contains(&names[0]), "the restored backup is kept");
+        assert!(!after.contains(&names[1]), "the next oldest goes instead");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_failed_state_load_puts_the_files_back() {
+        let dir = scratch_dir("failed-load");
+        let saves = Saves::new(dir.join("saves"));
+        let mut m = fake_slot(&saves, &dir);
+        let slot = saves.slot_dir("s").unwrap();
+        saves.save_state("s", Some("one"), &m, None).unwrap();
+        assert_eq!(m.run_for_ms(50.0), None);
+        let at = m.now();
+
+        let stara = slot.join("STARA.COM");
+        let starb = slot.join("STARB.COM");
+        std::fs::write(&stara, b"A later").unwrap();
+        let then = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000_000);
+        std::fs::File::options().write(true).open(&stara).unwrap().set_modified(then).unwrap();
+        let mut perm = std::fs::metadata(&starb).unwrap().permissions();
+        perm.set_readonly(true);
+        std::fs::set_permissions(&starb, perm).unwrap();
+        if std::fs::File::options().write(true).open(&starb).is_ok() {
+            eprintln!("skipping: read-only files are writable here (root?)");
+            std::fs::remove_dir_all(&dir).unwrap();
+            return;
+        }
+
+        // STARA is replaced, then STARB cannot be written.
+        let e = saves.load_state("s", "one", &mut m).unwrap_err();
+        assert!(e.downcast_ref::<SlotInconsistent>().is_none(), "{e:#}");
+        assert!(e.to_string().contains("as it was"), "{e:#}");
+        assert_eq!(m.now(), at);
+        assert_eq!(std::fs::read(&stara).unwrap(), b"A later");
+        assert_eq!(std::fs::metadata(&stara).unwrap().modified().unwrap(), then);
+        assert_eq!(std::fs::read(&starb).unwrap(), b"B at save");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

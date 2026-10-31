@@ -163,10 +163,10 @@ impl Machine {
                 self.bus.events_dirty = false;
                 self.process_events();
             }
-            if self.cpu.irq_allowed() {
-                if let Some(v) = self.bus.pic.acknowledge() {
-                    self.cpu.interrupt(&mut self.bus, v);
-                }
+            if self.cpu.irq_allowed()
+                && let Some(v) = self.bus.pic.acknowledge()
+            {
+                self.cpu.interrupt(&mut self.bus, v);
             }
             if let Some(h) = &mut self.hook {
                 h(&self.cpu, &self.bus);

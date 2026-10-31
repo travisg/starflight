@@ -94,10 +94,10 @@ impl PcBus {
     fn log_speaker(&mut self) {
         let t = self.now();
         let s = self.speaker_state();
-        if let Some(log) = &mut self.speaker_log {
-            if log.last().map(|(_, last)| *last != s).unwrap_or(true) {
-                log.push((t, s));
-            }
+        if let Some(log) = &mut self.speaker_log
+            && log.last().map(|(_, last)| *last != s).unwrap_or(true)
+        {
+            log.push((t, s));
         }
     }
 
