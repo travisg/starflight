@@ -14,6 +14,7 @@ pub mod consts;
 pub mod decompile;
 pub mod dict;
 pub mod directory;
+pub mod security;
 pub mod trace;
 
 /// Little-endian 16-bit read from a 64 KiB segment image, wrapping like the 8086.

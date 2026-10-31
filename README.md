@@ -155,6 +155,12 @@ starflight headless --trace-forth trace.txt --files
 starflight headless --keys '{wait 3000}5{enter}' --run-ms 60000 --shot-every 4000
 ```
 
+`{code}` types the answer to the launch security check (the code wheel) on
+screen; the window shows the same answer in its title while the prompt is up.
+The game derives the code from the three wheel positions it shows, so the
+emulator reads them from memory and applies the game's own formula
+(`crates/sfforth/src/security.rs`).
+
 Keys are typed one at a time, each after the game has taken the previous one
 (its keyboard handler drops buffered keys). `--trace-forth` writes every Forth
 word the game executes (return-stack pointer, code field address, name);
@@ -177,7 +183,10 @@ starflight credits    # who made the game and whose work this builds on
 
 `words` prints each word's code field address, kind (CODE, COLON, VAR, CONST,
 or `DOES:xxxx` for other defining words), vocabulary chain, where the name came
-from, and the name. Truncated names show their declared length as `~N`.
+from, its declared length, and the name. FORTHOUGHT kept only a prefix of
+some names (usually 7 characters) while recording the full length; those end
+in `…`, so `LET-TH…` with length 23 is a 23-character name of which "LET-TH"
+survives. 1375 of the 1703 names are complete.
 
 ## Layout
 

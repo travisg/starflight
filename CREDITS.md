@@ -128,6 +128,13 @@ here:
   `INT10_SetBackgroundBorder`/`INT10_SetColorSelect`
   (`crates/pc/src/video/int10.rs`).
 
+### STARCODE.EXE
+
+An anonymous Windows code-wheel lookup program from the author's collection.
+Its planet, artifact and race lists were the cross-check for the game's own
+security-check tables (the game's artifact ring turned out to be rotated by
+two). The code formula itself was read from the game's STP-OV overlay.
+
 ### This repository's author, 2002
 
 `scanstarflt.cpp`, a directory scanner written in 2002 that had already

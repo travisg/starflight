@@ -128,6 +128,9 @@ fn held_modifiers(m: Mod) -> Vec<u8> {
         .collect()
 }
 
+/// How long after the launch security prompt its answer stays in the title.
+const SECURITY_SHOWN_MS: f64 = 120_000.0;
+
 /// How long a state message stays in the window title.
 const MESSAGE_TIME: Duration = Duration::from_secs(4);
 
@@ -170,6 +173,7 @@ pub fn run(mut s: Session, scale: u32, saves: &Saves, slot: &str) -> Result<()> 
     let mut last = Instant::now();
     // A state saved or loaded, shown in the title for a while.
     let mut message: Option<(String, Instant)> = None;
+    let mut security: Option<crate::session::SecurityCheck> = None;
 
     'main: loop {
         for e in events.poll_iter() {
@@ -280,6 +284,10 @@ pub fn run(mut s: Session, scale: u32, saves: &Saves, slot: &str) -> Result<()> 
             synth.skip_to(s.machine.now(), s.machine.bus.speaker_state());
         }
 
+        // The code-wheel answer while the launch prompt is likely up.
+        if s.machine.frames % 30 == 0 || security.is_none() {
+            security = s.recent_security_challenge(SECURITY_SHOWN_MS);
+        }
         let mut title = if paused {
             "Starflight (paused)".to_string()
         } else if let Some(stop) = &stopped {
@@ -294,6 +302,9 @@ pub fn run(mut s: Session, scale: u32, saves: &Saves, slot: &str) -> Result<()> 
         }
         if let Some((text, _)) = &message {
             title = format!("{title} - {text}");
+        }
+        if let Some(c) = &security {
+            title = format!("{title} - security code for {} / {} / {}: {}", c.planet_name, c.artifact_name, c.race_name, c.code);
         }
         if canvas.window().title() != title {
             canvas.window_mut().set_title(&title)?;

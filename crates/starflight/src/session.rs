@@ -15,6 +15,7 @@ use pc::hle::bda;
 use pc::{Config, Machine, Stop, bios};
 use sfforth::consts::STARFLT_COM_SIZE;
 use sfforth::directory::{self, DirEntry};
+use sfforth::security;
 use sfforth::trace::{Entry, JMP_BX, Names, Recent};
 use sfforth::{dict, segment_image};
 use std::cell::RefCell;
@@ -28,11 +29,14 @@ pub enum KeyAction {
     /// Press and release a key (set-1 make code), holding Shift if asked.
     Press { code: u8, shift: bool },
     Wait(f64),
+    /// Type the answer to the launch security check on screen.
+    SecurityCode,
 }
 
 /// Parses a key script: plain characters, `{name}` for special keys
 /// (enter esc space tab bs up down left right home end pgup pgdn ins del
-/// f1-f10 kp0-kp9) and `{wait MS}`.
+/// f1-f10 kp0-kp9), `{wait MS}`, and `{code}` for the answer to the launch
+/// security check being shown.
 pub fn parse_keys(s: &str) -> Result<Vec<KeyAction>> {
     let mut out = Vec::new();
     let mut chars = s.chars();
@@ -49,6 +53,10 @@ pub fn parse_keys(s: &str) -> Result<Vec<KeyAction>> {
         if let Some(ms) = lower.strip_prefix("wait") {
             let ms: f64 = ms.trim().parse().with_context(|| format!("bad wait in {{{name}}}"))?;
             out.push(KeyAction::Wait(ms));
+            continue;
+        }
+        if lower == "code" {
+            out.push(KeyAction::SecurityCode);
             continue;
         }
         let code = match lower.as_str() {
@@ -78,7 +86,25 @@ pub fn parse_keys(s: &str) -> Result<Vec<KeyAction>> {
     Ok(out)
 }
 
+/// A security challenge as shown on screen, and its answer.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SecurityCheck {
+    pub planet_name: String,
+    pub artifact_name: String,
+    pub race_name: String,
+    pub code: u16,
+}
+
+impl From<security::Challenge> for SecurityCheck {
+    fn from(c: security::Challenge) -> Self {
+        SecurityCheck { planet_name: c.planet_name, artifact_name: String::new(), race_name: c.race_name, code: c.code }
+    }
+}
+
 pub struct Session {
+    /// The last launch security challenge printed, captured while STP-OV was
+    /// resident, with the master tick it was printed at.
+    challenge: Rc<RefCell<Option<(security::Challenge, u64)>>>,
     pub machine: Machine,
     pub names: Rc<Names>,
     pub recent: Rc<RefCell<Recent>>,
@@ -110,6 +136,8 @@ impl Session {
         let names = Rc::new(Names::from_words(&dict::decode_dictionary(&segment_image(&com))));
         let recent = Rc::new(RefCell::new(Recent::new(RECENT_WORDS)));
         let (r, n) = (recent.clone(), names.clone());
+        let challenge = Rc::new(RefCell::new(None));
+        let ch = challenge.clone();
         machine.hook = Some(Box::new(move |cpu, bus| {
             if cpu.sregs[CS] != game_cs {
                 return;
@@ -118,12 +146,19 @@ impl Session {
             if bus.ram[p] == JMP_BX[0] && bus.ram[p + 1] == JMP_BX[1] {
                 let e = Entry { cfa: cpu.regs[BX], rp: cpu.regs[BP] };
                 r.borrow_mut().push(e);
+                if e.cfa == security::NAME_PRINTER {
+                    let base = phys(game_cs, 0) as usize;
+                    if let Some(c) = security::read(&bus.ram[base..base + 0x10000]) {
+                        *ch.borrow_mut() = Some((c, bus.now()));
+                    }
+                }
                 if let Some(t) = &mut trace {
                     let _ = writeln!(t, "{:04X} {:04X} {}", e.rp, e.cfa, n.label(e.cfa));
                 }
             }
         }));
         Ok(Session {
+            challenge,
             machine,
             names,
             recent,
@@ -145,6 +180,7 @@ impl Session {
         let stara = self.machine.dos.drive_dir.join("STARA.COM");
         self.directory = directory::parse(&std::fs::read(&stara).with_context(|| format!("reading {}", stara.display()))?);
         *self.recent.borrow_mut() = Recent::new(RECENT_WORDS);
+        *self.challenge.borrow_mut() = None;
         self.last_text = None;
         self.release_modifiers(host_held);
         Ok(backup)
@@ -232,9 +268,48 @@ impl Session {
             match *a {
                 KeyAction::Press { code, shift } => self.press(code, shift)?,
                 KeyAction::Wait(ms) => self.run_ms(ms)?,
+                KeyAction::SecurityCode => {
+                    let Some(c) = self.security_challenge() else {
+                        return Err(Stop::Unsupported("{code} in a key script, but no security check is on screen".into()));
+                    };
+                    eprintln!("security check: {} / {} / {} -> {}", c.planet_name, c.artifact_name, c.race_name, c.code);
+                    for ch in c.code.to_string().chars() {
+                        let (code, shift) = pc::keyboard::scan_for_char(ch).expect("digits are typable");
+                        self.press(code, shift)?;
+                    }
+                }
             }
         }
         Ok(())
+    }
+
+    /// The launch security check most recently shown, with its answer.
+    pub fn security_challenge(&self) -> Option<SecurityCheck> {
+        let (c, _) = self.challenge.borrow().clone()?;
+        let rec = c.artifact_record;
+        Some(SecurityCheck { artifact_name: self.artifact_name(rec), ..c.into() })
+    }
+
+    /// The security check shown within the last `ms` of emulated time.
+    pub fn recent_security_challenge(&self, ms: f64) -> Option<SecurityCheck> {
+        let at = self.challenge.borrow().as_ref()?.1;
+        (self.machine.now().saturating_sub(at) <= Machine::ms_to_master(ms)).then(|| self.security_challenge())?
+    }
+
+    /// Name of record `rec` of the ARTIFACT table, from the slot's files.
+    fn artifact_name(&self, rec: u8) -> String {
+        let dir = &self.machine.dos.drive_dir;
+        let (Ok(a), Ok(b)) = (std::fs::read(dir.join("STARA.COM")), std::fs::read(dir.join("STARB.COM"))) else {
+            return format!("artifact #{rec}");
+        };
+        let Some(e) = self.directory.iter().find(|e| e.name == "ARTIFACT") else {
+            return format!("artifact #{rec}");
+        };
+        match directory::record(&a, &b, e, rec as u16) {
+            // The name field is 24 characters padded with periods (ART-NAM, -XTRAIL).
+            Some(r) => r[..24.min(r.len())].iter().map(|&c| c as char).collect::<String>().trim_end_matches(['.', ' ']).to_string(),
+            None => format!("artifact #{rec}"),
+        }
     }
 
     /// Which directory entry a byte offset of STARA (1) or STARB (2) falls in.

@@ -130,6 +130,9 @@ enum Cmd {
         /// Print the game's file transfers at the end.
         #[arg(long)]
         files: bool,
+        /// Write the game's 64 KiB segment (overlays included) to a file at the end.
+        #[arg(long)]
+        dump_seg: Option<PathBuf>,
     },
     /// Show who made the game and whose work this emulator builds on.
     Credits,
@@ -152,16 +155,24 @@ fn cmd_words(game_dir: &Path) -> Result<()> {
     let seg = sfforth::segment_image(&com);
     let mut words = dict::decode_dictionary(&seg);
     words.sort_by_key(|w| w.cfa);
-    println!("{:>4}  {:<10} {:<3} {:<6} name", "cfa", "kind", "voc", "source");
+    println!("{:>4}  {:<10} {:<3} {:<6} {:>3}  name", "cfa", "kind", "voc", "source", "len");
     for w in &words {
         let mut name = w.display_name();
         if w.truncated() {
-            name.push_str(&format!("~{}", w.declared_len));
+            name.push('…');
         }
         if w.immediate() {
             name.push_str(" (immediate)");
         }
-        println!("{:04X}  {:<10} {:<3} {:<6} {}", w.cfa, w.kind.label(), w.vocab, w.provenance.label(), name);
+        println!(
+            "{:04X}  {:<10} {:<3} {:<6} {:>3}  {}",
+            w.cfa,
+            w.kind.label(),
+            w.vocab,
+            w.provenance.label(),
+            w.declared_len,
+            name
+        );
     }
     let count = |k: fn(&dict::Kind) -> bool| words.iter().filter(|w| k(&w.kind)).count();
     eprintln!(
@@ -255,6 +266,7 @@ fn cmd_headless(
     shots: Option<(f64, &Path)>,
     trace_forth: Option<&Path>,
     files: bool,
+    dump_seg: Option<&Path>,
     states: HeadlessStates,
 ) -> Result<()> {
     let script = session::parse_keys(keys)?;
@@ -315,6 +327,11 @@ fn cmd_headless(
                 println!("{}", l.trim_end());
             }
         }
+    }
+    if let Some(p) = dump_seg {
+        let base = cpu8086::phys(s.game_cs, 0) as usize;
+        std::fs::write(p, &s.machine.bus.ram[base..base + 0x10000]).with_context(|| format!("writing {}", p.display()))?;
+        eprintln!("wrote the game segment ({:04X}:0000) to {}", s.game_cs, p.display());
     }
     if files {
         print!("{}", s.file_summary());
@@ -431,6 +448,7 @@ fn main() -> Result<()> {
             shots_dir,
             trace_forth,
             files,
+            dump_seg,
         } => cmd_headless(
             &saves,
             &save,
@@ -444,6 +462,7 @@ fn main() -> Result<()> {
             shot_every.map(|e| (e, shots_dir.as_path())),
             trace_forth.as_deref(),
             files,
+            dump_seg.as_deref(),
             HeadlessStates { load: load_state.as_deref(), save: save_state.as_deref(), description: description.as_deref() },
         ),
         Cmd::Play { save, game_dir, mhz, scale, load_state } => {

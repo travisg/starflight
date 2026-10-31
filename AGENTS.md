@@ -49,6 +49,7 @@ as optional, clearly separated fast paths.
 | `crates/sfforth/src/consts.rs` | Fixed addresses in STARFLT.COM. |
 | `crates/sfforth/src/dict.rs` | Dictionary header decoding. |
 | `crates/sfforth/src/directory.rs` | STARA/STARB directory parsing. |
+| `crates/sfforth/src/security.rs` | Launch security check: STP-OV signature, variables, code formula. |
 | `crates/sfforth/src/{trace,decompile}.rs` | Word-entry tracing (NEXT's `jmp [bx]`), colon-definition listing. |
 | `crates/starflight/src/main.rs` | The `starflight` CLI. |
 | `crates/starflight/src/session.rs` | Machine + Forth view, paced key scripts, stop reports. |
@@ -66,6 +67,9 @@ as optional, clearly separated fast paths.
 - The four vocabulary chains are disjoint and together hold 1703 headers.
 - Directory entries do not cross 1 KiB block boundaries: 48 entries of 21
   bytes per block, four blocks. An entry's position is its FILE#.
+- Overlays share load addresses (STP-OV and MISC-OV are both 1440 bytes at
+  EFC0) and swap while a word waits for input; identify an overlay by a code
+  signature, not its header, and read its variables while its words run.
 - Directory start/end paragraphs address STARA.COM then STARB.COM as one
   space (STARB from offset 256000); use `DirEntry::location()`, not the
   file-number byte. Data records also never cross a 1 KiB block boundary.

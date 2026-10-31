@@ -66,6 +66,29 @@ impl DirEntry {
     }
 }
 
+/// Record `rec` of a table entry, from the contents of STARA.COM and
+/// STARB.COM. Records never cross a 1 KiB block boundary; the first block may
+/// be partial (s-macke extract.c `ExtractRecord`, after the game's RECADD).
+pub fn record<'a>(stara: &'a [u8], starb: &'a [u8], e: &DirEntry, rec: u16) -> Option<&'a [u8]> {
+    let size = e.reclen as usize;
+    if size == 0 || rec >= e.nrec {
+        return None;
+    }
+    let (file, start) = e.location();
+    let data = if file == 1 { stara } else { starb };
+    let (block, within) = ((start as usize) & !0x3ff, (start as usize) & 0x3ff);
+    let first = (BLOCK_SIZE - within) / size;
+    let rec = rec as usize;
+    let at = if rec < first {
+        block + within + rec * size
+    } else {
+        let per = BLOCK_SIZE / size;
+        let r = rec - first;
+        block + BLOCK_SIZE + (r / per) * BLOCK_SIZE + (r % per) * size
+    };
+    data.get(at..at + size)
+}
+
 /// Parses the directory from the first 4 KiB of STARA.COM or STARB.COM.
 /// Entries with a blank name are skipped but keep their FILE# numbering.
 pub fn parse(data: &[u8]) -> Vec<DirEntry> {
