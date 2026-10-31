@@ -1,0 +1,86 @@
+# starflight
+
+A Rust + SDL program that runs the original **Starflight** (Binary Systems /
+Electronic Arts, 1986) from its DOS files by emulating the 8086 PC it was
+written for. The game's own code runs unmodified: its Forth system, its
+machine-code primitives and its CGA/EGA drivers. A Forth-aware layer on top
+names, traces and decompiles what the game is doing.
+
+## Acknowledgements
+
+Starflight was created by **Binary Systems** and published by Electronic Arts:
+Rod McConnell, Greg Johnson, Tim Lee, Alec Kercso, Bob Gonsalves and Dave
+Boulton, with help from Paul Reiche III and Joe Ybarra
+([The Digital Antiquarian](https://www.filfre.net/2014/10/starflight/) tells
+the story).
+
+This project builds directly on other people's work:
+
+- **Sebastian Macke**, [starflight-reverse](https://github.com/s-macke/starflight-reverse):
+  the disassembly, Forth-to-C transpiler, word names and data formats of the
+  game. The code addresses, DOS interrupt usage and the patch that enables
+  the game's built-in Forth interpreter all come from that work.
+- **Jeremy Penner (SpindleyQ)**, [StarflightVM](https://git.information-superhighway.net/SpindleyQ/starflightvm):
+  analysis of the boot code and interrupt handlers, the Tandy detection
+  detail, and ideas for the debugging tools.
+- **Tim Lee**, one of the original programmers, who published partial source
+  code and design documents in the early 2000s (preserved in
+  starflight-reverse's `webarchive/`).
+- The anonymous author of the **migblog** reverse-engineering notes (also
+  archived by starflight-reverse).
+- **Daniel Balsom**, [SingleStepTests/8088](https://github.com/SingleStepTests/8088):
+  the hardware-generated test suite the CPU core is checked against.
+- The **DOSBox** team: the reference emulator used for comparison.
+
+[CREDITS.md](CREDITS.md) lists which facts come from where. `starflight credits`
+prints the same list.
+
+## Status
+
+Milestone M0: the dictionary and directory tools work. The emulator does not
+run the game yet. The plan, in order:
+
+1. M1: 8086 core, checked against SingleStepTests.
+2. M2: machine, BIOS and DOS emulation; boots headless to the display menu.
+3. M3: SDL window, EGA graphics, keyboard and PC speaker; title screens.
+4. M4: playability across the game; SAVE GAME and resume.
+5. M5: save management, speed control, CGA.
+
+## Building
+
+Requires stable Rust. Later milestones also need the SDL2 development
+libraries (`libsdl2-dev` on Debian/Ubuntu).
+
+```sh
+cargo build --release
+```
+
+## Usage
+
+The original game files are only ever read, never written. By default they
+are taken from `/storage/games/starflt/START`; pass `--game-dir` to use
+another copy.
+
+```sh
+starflight words      # every word in STARFLT.COM's dictionary, with its type
+starflight dir        # the STARA/STARB file directory (FILE# table)
+starflight credits    # who made the game and whose work this builds on
+```
+
+`words` prints each word's code field address, kind (CODE, COLON, VAR, CONST,
+or `DOES:xxxx` for other defining words), vocabulary chain, where the name came
+from, and the name. Truncated names show their declared length as `~N`.
+
+## Layout
+
+| Path | What it is |
+|---|---|
+| `crates/cpu8086` | Real-mode 8086 interpreter core (no dependencies). |
+| `crates/pc` | The PC/XT-class machine: devices, BIOS and DOS emulation. |
+| `crates/sfforth` | Starflight's Forth seen from outside: dictionary, directory, tracing. |
+| `crates/starflight` | The `starflight` command: CLI, SDL front end, headless runner. |
+
+## License
+
+MIT; see [LICENSE](LICENSE). Starflight itself is not included and remains
+the property of its rights holders.

@@ -1,0 +1,9 @@
+[package]
+name = "cpu8086"
+description = "Real-mode 8086/8088 interpreter core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]

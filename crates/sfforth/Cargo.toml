@@ -1,0 +1,9 @@
+[package]
+name = "sfforth"
+description = "Introspection of Starflight's Forth: dictionary, names, directory, tracing"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]

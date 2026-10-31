@@ -1,0 +1,13 @@
+[package]
+name = "starflight"
+description = "Runs the original Starflight (1986) on an emulated 8086 PC, with SDL"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+pc = { path = "../pc" }
+sfforth = { path = "../sfforth" }

@@ -1,0 +1,11 @@
+/target/
+# Save slots, traces and screenshots hold game data or game-derived images.
+/saves/
+/traces/
+/screenshots/
+/out/
+# Never commit the game itself.
+*.COM
+*.com
+*.EXE
+*.exe

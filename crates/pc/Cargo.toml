@@ -1,0 +1,10 @@
+[package]
+name = "pc"
+description = "The IBM PC/XT-class machine Starflight runs on: devices, BIOS and DOS HLE"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+cpu8086 = { path = "../cpu8086" }
