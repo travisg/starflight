@@ -85,12 +85,14 @@ Pass `--game-dir` to use another copy.
 starflight play                   # save slot "default", created from game/START
 starflight play --save mygame     # another slot
 starflight play --mhz 8           # emulated CPU speed (default 4.77, the IBM PC)
+starflight play --load-state NAME # start from a snapshot (see below)
 ```
 
 The machine is paced to real time; the game's own clock runs off the
 emulated timer, so timed delays keep their original length at any `--mhz`.
-In the window: F11 toggles fullscreen, F12 toggles turbo, Pause pauses. The
-arrow keys, Home/End/PgUp/PgDn and the numeric keypad are the XT keypad.
+In the window: F11 toggles fullscreen, F12 toggles turbo, Pause pauses,
+Ctrl+F11 saves a snapshot and Ctrl+F12 loads the latest one. The arrow keys,
+Home/End/PgUp/PgDn and the numeric keypad are the XT keypad.
 
 ### Save slots
 
@@ -108,11 +110,43 @@ starflight saves mygame                         # list a slot's backups
 starflight restore mygame 20261030-231502       # put a backup back
 ```
 
+### Snapshots
+
+A snapshot (state) holds the whole emulated PC (CPU, memory, video adapter,
+timers, keyboard, DOS) together with the slot's STARA.COM and STARB.COM at
+that instant, so a game can be resumed from any moment rather than only from
+SAVE GAME. Each state belongs to a slot and lives in
+`saves/<slot>/states/<name>/`: `machine.bin.gz`, the two game files, and
+`info.txt` (UTC creation time, emulated time, instructions executed, and an
+optional description).
+
+In the window, Ctrl+F11 saves a state named `quick-YYYYMMDD-HHMMSS` (UTC)
+and shows the name in the title bar for a few seconds; Ctrl+F12 loads the
+slot's most recent state. Ctrl itself still reaches the game.
+
+```sh
+starflight states mygame                                      # list a slot's states
+starflight play --save mygame --load-state quick-20261030-231502
+starflight headless --keys '{wait 2000}5{enter}' --save-state credits
+starflight headless --load-state credits --keys '{space}' --run-ms 20000
+```
+
+Loading a state first backs up the slot's files (each load makes a backup,
+and a slot keeps its last 20), then puts the state's STARA.COM and STARB.COM
+in their place with the times they had. The slot's STARFLT.COM must be the
+known 54183-byte build. The CPU speed is the session's `--mhz`, not the one
+the state was saved at. Ctrl, Shift and Alt that were held down when the
+state was saved (a Ctrl+F11 state has Ctrl down) are released on load,
+unless they are held on the host. A name already in use is refused; remove
+the state's directory to reuse it. A state written by a build with another
+snapshot format is refused with a message naming both versions.
+
 ### Without a window
 
 `headless` runs the game for a while with scripted keys and prints the text
 screen; it recreates its slot (`headless`) from the game directory each run
-unless `--keep` is given.
+unless `--keep` or `--load-state` is given (recreating leaves the slot's
+states alone).
 
 ```sh
 starflight headless --run-ms 8000 --text
@@ -127,7 +161,10 @@ word the game executes (return-stack pointer, code field address, name);
 `--files` lists the game's file transfers by directory entry; `--shot-every
 MS` writes a PNG every MS of emulated time into `screenshots/` (gitignored). If the machine
 stops (an unknown opcode, port or DOS function), the report shows where, the
-registers and the most recent Forth words.
+registers and the most recent Forth words. `--load-state NAME` starts from a
+state of the slot; `--save-state NAME` (with an optional `--description`)
+saves one when the run finishes, but not if the machine stopped or the game
+exited. The name is checked before the run starts.
 
 ### Tools
 
@@ -146,7 +183,7 @@ from, and the name. Truncated names show their declared length as `~N`.
 
 | Path | What it is |
 | --- | --- |
-| `crates/cpu8086` | Real-mode 8086 interpreter core (no dependencies). |
+| `crates/cpu8086` | Real-mode 8086 interpreter core (no dependencies by default; `serde` feature for snapshots). |
 | `crates/pc` | The PC/XT-class machine: devices, BIOS and DOS emulation. |
 | `crates/sfforth` | Starflight's Forth seen from outside: dictionary, directory, tracing. |
 | `crates/starflight` | The `starflight` command: CLI, SDL front end, headless runner. |

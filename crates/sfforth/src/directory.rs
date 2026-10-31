@@ -11,20 +11,25 @@
 //! count, record size, and one more byte. An entry's position in the table is
 //! its FILE# in the game. Field layout: s-macke extract.c `LoadDir`; the block
 //! layout was also worked out in this repo author's 2002 `scanstarflt.cpp`.
+//!
+//! Start and end paragraphs address STARA.COM followed by STARB.COM as one
+//! space: offsets from 256000 (STARA's size) on are in STARB (s-macke
+//! extract.c `Extract`).
 
 pub const BLOCKS: usize = 4;
 pub const ENTRIES_PER_BLOCK: usize = 48;
 pub const ENTRY_SIZE: usize = 21;
 pub const BLOCK_SIZE: usize = 1024;
+/// Size of STARA.COM; directory offsets past it fall in STARB.COM.
+pub const STARA_SIZE: u32 = 256_000;
 
 #[derive(Clone, Debug)]
 pub struct DirEntry {
     /// FILE#: position in the directory.
     pub index: usize,
     pub name: String,
-    /// 1 = STARA.COM, 2 = STARB.COM, 0 = no stored data. 4 is seen on PHAZES
-    /// and SAVE (in STARA per s-macke) and 3 on VES-BLT, whose start lies past
-    /// the end of both files; their meaning is not yet known.
+    /// 0 for entries with no stored data; otherwise 1-4, meaning not yet
+    /// known. Which file holds the data follows from the start offset.
     pub fileno: u8,
     pub start_para: u16,
     pub end_para: u16,
@@ -34,8 +39,16 @@ pub struct DirEntry {
 }
 
 impl DirEntry {
+    /// Offset in the combined STARA+STARB space.
     pub fn offset(&self) -> u32 {
         self.start_para as u32 * 16
+    }
+
+    /// The file holding the entry (1 = STARA.COM, 2 = STARB.COM) and the
+    /// offset within it.
+    pub fn location(&self) -> (u8, u32) {
+        let o = self.offset();
+        if o >= STARA_SIZE { (2, o - STARA_SIZE) } else { (1, o) }
     }
 
     /// Bytes reserved in the file, end paragraph inclusive.
@@ -46,8 +59,10 @@ impl DirEntry {
         (self.end_para as u32 - self.start_para as u32 + 1) * 16
     }
 
-    pub fn contains(&self, fileno: u8, offset: u32) -> bool {
-        self.fileno == fileno && offset >= self.offset() && offset < self.offset() + self.span()
+    /// Whether byte `offset` of file `file` (1 = STARA, 2 = STARB) is in this entry.
+    pub fn contains(&self, file: u8, offset: u32) -> bool {
+        let (f, start) = self.location();
+        self.span() > 0 && f == file && offset >= start && offset < start + self.span()
     }
 }
 

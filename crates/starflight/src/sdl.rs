@@ -8,15 +8,18 @@
 //! XT scan codes, plays the PC speaker, and paces the machine to real time.
 //!
 //! Emulator keys (not on an XT keyboard, so never needed by the game):
-//! F11 toggles fullscreen, F12 toggles turbo, Pause pauses.
+//! F11 toggles fullscreen, F12 toggles turbo, Pause pauses, Ctrl+F11 saves
+//! a quick state of the slot and Ctrl+F12 loads the slot's latest state.
+//! F11 and F12 never reach the game; Ctrl does, as on the XT.
 
 use crate::audio::{SAMPLE_RATE, Synth};
+use crate::saves::Saves;
 use crate::session::Session;
 use anyhow::{Result, anyhow};
 use pc::{Machine, Stop};
 use sdl2::audio::{AudioQueue, AudioSpecDesired};
 use sdl2::event::Event;
-use sdl2::keyboard::Scancode;
+use sdl2::keyboard::{Mod, Scancode};
 use sdl2::pixels::PixelFormatEnum;
 use sdl2::rect::Rect;
 use sdl2::video::FullscreenType;
@@ -114,6 +117,20 @@ fn xt_code(sc: Scancode) -> Option<u8> {
     })
 }
 
+const CTRL: Mod = Mod::LCTRLMOD.union(Mod::RCTRLMOD);
+
+/// XT make codes of the modifiers held on the host.
+fn held_modifiers(m: Mod) -> Vec<u8> {
+    [(CTRL, 0x1d), (Mod::LSHIFTMOD, 0x2a), (Mod::RSHIFTMOD, 0x36), (Mod::LALTMOD.union(Mod::RALTMOD), 0x38)]
+        .into_iter()
+        .filter(|&(bits, _)| m.intersects(bits))
+        .map(|(_, code)| code)
+        .collect()
+}
+
+/// How long a state message stays in the window title.
+const MESSAGE_TIME: Duration = Duration::from_secs(4);
+
 /// Largest 4:3 rectangle centred in the window.
 fn fit_4_3(w: u32, h: u32) -> Rect {
     let (rw, rh) = if w * 3 > h * 4 { (h * 4 / 3, h) } else { (w, w * 3 / 4) };
@@ -122,7 +139,9 @@ fn fit_4_3(w: u32, h: u32) -> Rect {
 
 const AUDIO_MAX_QUEUED: u32 = SAMPLE_RATE / 5 * 2; // 200 ms of i16 samples, in bytes
 
-pub fn run(mut s: Session, scale: u32) -> Result<()> {
+/// Runs the session in a window. `saves` and `slot` are where Ctrl+F11 and
+/// Ctrl+F12 save and load states; `s` must be running that slot.
+pub fn run(mut s: Session, scale: u32, saves: &Saves, slot: &str) -> Result<()> {
     let sdl = sdl2::init().map_err(|e| anyhow!(e))?;
     let video = sdl.video().map_err(|e| anyhow!(e))?;
     let window = video
@@ -149,11 +168,62 @@ pub fn run(mut s: Session, scale: u32) -> Result<()> {
     let mut paused = false;
     let mut stopped: Option<Stop> = None;
     let mut last = Instant::now();
+    // A state saved or loaded, shown in the title for a while.
+    let mut message: Option<(String, Instant)> = None;
 
     'main: loop {
         for e in events.poll_iter() {
             match e {
                 Event::Quit { .. } => break 'main,
+                Event::KeyDown { scancode: Some(Scancode::F11), keymod, repeat: false, .. } if keymod.intersects(CTRL) => {
+                    let text = if let Some(stop) = &stopped {
+                        eprintln!("not saving a state: the machine has stopped ({stop})");
+                        "not saved: the machine has stopped".to_string()
+                    } else {
+                        match saves.save_state(slot, None, &s.machine, None) {
+                            Ok(name) => {
+                                eprintln!("saved state {name:?} of save {slot:?}");
+                                format!("saved {name}")
+                            }
+                            Err(e) => {
+                                eprintln!("saving a state failed: {e:#}");
+                                "saving a state failed".to_string()
+                            }
+                        }
+                    };
+                    message = Some((text, Instant::now()));
+                }
+                Event::KeyDown { scancode: Some(Scancode::F12), keymod, repeat: false, .. } if keymod.intersects(CTRL) => {
+                    let text = match saves.states(slot).map(|v| v.into_iter().next_back()) {
+                        Ok(Some(st)) => match s.load_state(saves, slot, &st.name, &held_modifiers(keymod)) {
+                            Ok(backup) => {
+                                eprintln!(
+                                    "loaded state {:?}; save {slot:?} backed up to {}",
+                                    st.name,
+                                    backup.display()
+                                );
+                                synth.skip_to(s.machine.now(), s.machine.bus.speaker_state());
+                                queue.clear();
+                                shown_frames = u64::MAX;
+                                stopped = None;
+                                format!("loaded {}", st.name)
+                            }
+                            Err(e) => {
+                                eprintln!("loading state {:?} failed: {e:#}", st.name);
+                                "loading a state failed".to_string()
+                            }
+                        },
+                        Ok(None) => {
+                            eprintln!("save {slot:?} has no states");
+                            "no states to load".to_string()
+                        }
+                        Err(e) => {
+                            eprintln!("listing states failed: {e:#}");
+                            "listing states failed".to_string()
+                        }
+                    };
+                    message = Some((text, Instant::now()));
+                }
                 Event::KeyDown { scancode: Some(Scancode::F11), repeat: false, .. } => {
                     let w = canvas.window_mut();
                     let fs = if w.fullscreen_state() == FullscreenType::Off { FullscreenType::Desktop } else { FullscreenType::Off };
@@ -204,24 +274,29 @@ pub fn run(mut s: Session, scale: u32) -> Result<()> {
                     break 'main;
                 }
                 eprint!("{}", s.report(&stop));
-                canvas.window_mut().set_title(&format!("Starflight - stopped: {stop}"))?;
                 stopped = Some(stop);
             }
         } else if paused {
             synth.skip_to(s.machine.now(), s.machine.bus.speaker_state());
         }
 
-        let title = if paused {
-            Some("Starflight (paused)")
-        } else if stopped.is_none() {
-            Some(if turbo { "Starflight (turbo)" } else { "Starflight" })
+        let mut title = if paused {
+            "Starflight (paused)".to_string()
+        } else if let Some(stop) = &stopped {
+            format!("Starflight - stopped: {stop}")
+        } else if turbo {
+            "Starflight (turbo)".to_string()
         } else {
-            None
+            "Starflight".to_string()
         };
-        if let Some(t) = title {
-            if canvas.window().title() != t {
-                canvas.window_mut().set_title(t)?;
-            }
+        if message.as_ref().is_some_and(|(_, at)| at.elapsed() > MESSAGE_TIME) {
+            message = None;
+        }
+        if let Some((text, _)) = &message {
+            title = format!("{title} - {text}");
+        }
+        if canvas.window().title() != title {
+            canvas.window_mut().set_title(&title)?;
         }
 
         if s.machine.frames != shown_frames {

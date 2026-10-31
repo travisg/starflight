@@ -8,9 +8,11 @@
 //! channel 2 the speaker. Counts are computed from the PIT tick count (master
 //! ticks / 12) when read, not stepped.
 
+use serde::{Deserialize, Serialize};
+
 pub const MASTER_PER_PIT: u64 = 12;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Channel {
     pub mode: u8,
     /// 1 = low byte, 2 = high byte, 3 = low then high.
@@ -112,7 +114,7 @@ impl SpeakerState {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Pit {
     pub ch: [Channel; 3],
     /// PIT tick of the next IRQ0, if channel 0 is periodic or armed.

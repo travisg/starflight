@@ -64,6 +64,8 @@ enum Cmd {
     Saves { name: Option<String> },
     /// Put one of a slot's backups back (the current files are backed up first).
     Restore { name: String, backup: String },
+    /// List a slot's emulator states (snapshots), oldest first.
+    States { name: String },
     /// Play in an SDL window. The save slot is created from the game directory
     /// if it does not exist, and backed up before every session.
     Play {
@@ -77,15 +79,28 @@ enum Cmd {
         /// Initial window size as a multiple of 320x240.
         #[arg(long, default_value_t = 3)]
         scale: u32,
+        /// Start from this state of the slot (see `starflight states`).
+        #[arg(long)]
+        load_state: Option<String>,
     },
     /// Run the game without a window: scripted keys, text screen on stdout.
     Headless {
-        /// Save slot to run; recreated from the game directory first unless --keep.
+        /// Save slot to run; recreated from the game directory first unless
+        /// --keep or --load-state.
         #[arg(long, default_value = "headless")]
         save: String,
         /// Use the slot as it is instead of recreating it.
         #[arg(long)]
         keep: bool,
+        /// Start from this state of the slot (implies --keep).
+        #[arg(long)]
+        load_state: Option<String>,
+        /// Save a state with this name when the run finishes without stopping.
+        #[arg(long)]
+        save_state: Option<String>,
+        /// Description stored with --save-state's state.
+        #[arg(long, requires = "save_state")]
+        description: Option<String>,
         #[arg(long, default_value = DEFAULT_GAME_DIR)]
         game_dir: PathBuf,
         /// Key script: characters, {enter} {esc} {space} {up} {f1}..., {wait MS}.
@@ -186,17 +201,17 @@ fn cmd_dir(game_dir: &Path) -> Result<()> {
     let entries = directory::parse(&stara);
     println!("{:>5}  {:<12} {:>4} {:>8} {:>7} {:>6} {:>4}", "file#", "name", "file", "offset", "span", "nrec", "rlen");
     for e in &entries {
-        let file = match e.fileno {
-            1 => "A".to_string(),
-            2 => "B".to_string(),
-            n => n.to_string(),
+        let file = match (e.span(), e.location().0) {
+            (0, _) => "-",
+            (_, 1) => "A",
+            _ => "B",
         };
         println!(
             "{:>5}  {:<12} {:>4} {:>8X} {:>7} {:>6} {:>4}",
             e.index,
             e.name,
             file,
-            e.offset(),
+            e.location().1,
             e.span(),
             e.nrec,
             e.reclen
@@ -219,6 +234,13 @@ fn write_png(path: &Path, frame: &pc::video::Frame) -> Result<()> {
     Ok(())
 }
 
+/// Emulator states to start from and to save at the end of a headless run.
+struct HeadlessStates<'a> {
+    load: Option<&'a str>,
+    save: Option<&'a str>,
+    description: Option<&'a str>,
+}
+
 #[allow(clippy::too_many_arguments)]
 fn cmd_headless(
     saves: &Saves,
@@ -233,9 +255,13 @@ fn cmd_headless(
     shots: Option<(f64, &Path)>,
     trace_forth: Option<&Path>,
     files: bool,
+    states: HeadlessStates,
 ) -> Result<()> {
     let script = session::parse_keys(keys)?;
-    let slot = if keep {
+    if let Some(name) = states.save {
+        saves.check_new_state(save, name)?;
+    }
+    let slot = if keep || states.load.is_some() {
         if !saves.exists(save) {
             bail!("no save {save:?}; create it with `starflight new-save {save}`");
         }
@@ -252,6 +278,14 @@ fn cmd_headless(
     eprintln!("{}", credits::BANNER);
     let mut s = Session::new(&slot, mhz, trace)?;
     s.show_text = text;
+    if let Some(name) = states.load {
+        let backup = s.load_state(saves, save, name, &[])?;
+        eprintln!(
+            "loaded state {name:?} ({:.2}s emulated); save {save:?} backed up to {}",
+            pc::Machine::master_to_ms(s.machine.now()) / 1000.0,
+            backup.display()
+        );
+    }
     let result = s.play_script(&script).and_then(|_| match shots {
         None => s.run_ms(run_ms),
         Some((every, dir)) => {
@@ -301,6 +335,14 @@ fn cmd_headless(
     if !m.bus.absent_ports.is_empty() {
         let ports: Vec<String> = m.bus.absent_ports.iter().map(|(p, n)| format!("{p:03X}x{n}")).collect();
         eprintln!("absent-hardware port accesses: {}", ports.join(" "));
+    }
+    if let Some(name) = states.save {
+        if result.is_ok() {
+            saves.save_state(save, Some(name), m, states.description)?;
+            eprintln!("saved state {name:?} of save {save:?}");
+        } else {
+            eprintln!("not saving state {name:?}: the run did not finish");
+        }
     }
     match result {
         Ok(()) => Ok(()),
@@ -359,9 +401,26 @@ fn main() -> Result<()> {
             println!("restored save {name:?} from backup {backup}");
             Ok(())
         }
+        Cmd::States { name } => {
+            if !saves.exists(&name) {
+                bail!("no save {name:?}");
+            }
+            let states = saves.states(&name)?;
+            let width = states.iter().map(|s| s.name.len()).max().unwrap_or(0).max(4);
+            println!("{:<width$}  {:<23}  {:>10}  description", "name", "created", "emulated");
+            for s in &states {
+                let emulated = format!("{:.1}s", s.emulated_s);
+                let desc = s.description.as_deref().unwrap_or("");
+                println!("{:<width$}  {:<23}  {emulated:>10}  {desc}", s.name, s.created);
+            }
+            Ok(())
+        }
         Cmd::Headless {
             save,
             keep,
+            load_state,
+            save_state,
+            description,
             game_dir,
             keys,
             run_ms,
@@ -385,9 +444,15 @@ fn main() -> Result<()> {
             shot_every.map(|e| (e, shots_dir.as_path())),
             trace_forth.as_deref(),
             files,
+            HeadlessStates { load: load_state.as_deref(), save: save_state.as_deref(), description: description.as_deref() },
         ),
-        Cmd::Play { save, game_dir, mhz, scale } => {
-            if saves.exists(&save) {
+        Cmd::Play { save, game_dir, mhz, scale, load_state } => {
+            if load_state.is_some() {
+                // Loading the state backs the slot up.
+                if !saves.exists(&save) {
+                    bail!("no save {save:?} to load a state of");
+                }
+            } else if saves.exists(&save) {
                 let b = saves.backup(&save)?;
                 eprintln!("backed up save {save:?} to {}", b.display());
             } else {
@@ -395,8 +460,12 @@ fn main() -> Result<()> {
                 eprintln!("created save {save:?} in {} from {}", dir.display(), game_dir.display());
             }
             eprintln!("{}", credits::BANNER);
-            let session = Session::new(&saves.slot_dir(&save)?, mhz, None)?;
-            sdl::run(session, scale)
+            let mut session = Session::new(&saves.slot_dir(&save)?, mhz, None)?;
+            if let Some(name) = &load_state {
+                let b = session.load_state(&saves, &save, name, &[])?;
+                eprintln!("loaded state {name:?}; save {save:?} backed up to {}", b.display());
+            }
+            sdl::run(session, scale, &saves, &save)
         }
         Cmd::Credits => {
             print!("{}", credits::CREDITS);

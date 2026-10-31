@@ -35,9 +35,11 @@ as optional, clearly separated fast paths.
 
 | Path | Contents |
 | --- | --- |
-| `crates/cpu8086` | 8086 interpreter core. No dependencies. |
+| `crates/cpu8086` | 8086 interpreter core. No dependencies by default; the `serde` feature derives (de)serialisation of `Cpu` for snapshots. |
 | `crates/cpu8086/tests/sst.rs` | SingleStepTests 8088 harness. |
 | `crates/pc/src/machine.rs` | Run loop: interrupts, traps, device events, idle skipping. |
+| `crates/pc/src/snapshot.rs` | Machine snapshots: `Machine::save_state`/`restore_state` (gzip, SFSNAP header, bincode body). |
+| `crates/pc/tests/snapshot.rs` | Snapshot format checks; save/restore/replay determinism on the real game. |
 | `crates/pc/src/bus.rs` | Memory map, port decoding, master clock (1/256 of 14.318 MHz ticks). |
 | `crates/pc/src/bios.rs` | ROM image with trap stubs at XT addresses, IVT, BDA, INT 08/09/16/1A. |
 | `crates/pc/src/dos/` | COM loader and INT 21h FCB file I/O over a save-slot directory. |
@@ -51,7 +53,7 @@ as optional, clearly separated fast paths.
 | `crates/starflight/src/main.rs` | The `starflight` CLI. |
 | `crates/starflight/src/session.rs` | Machine + Forth view, paced key scripts, stop reports. |
 | `crates/starflight/src/{sdl,audio}.rs` | SDL window, input mapping, PC-speaker synthesis. |
-| `crates/starflight/src/saves.rs` | Save slots and backups. |
+| `crates/starflight/src/saves.rs` | Save slots, backups, and states (snapshot + STARA/STARB per slot). |
 | `crates/starflight/src/credits.rs` | Credits text; keep in step with CREDITS.md. |
 
 ## Invariants that are easy to break
@@ -64,6 +66,9 @@ as optional, clearly separated fast paths.
 - The four vocabulary chains are disjoint and together hold 1703 headers.
 - Directory entries do not cross 1 KiB block boundaries: 48 entries of 21
   bytes per block, four blocks. An entry's position is its FILE#.
+- Directory start/end paragraphs address STARA.COM then STARB.COM as one
+  space (STARB from offset 256000); use `DirEntry::location()`, not the
+  file-number byte. Data records also never cross a 1 KiB block boundary.
 - No CPU decode cache: the game rewrites its own code (0x193, 0x16C9).
 - XKEYINT empties the BIOS key buffer on every key press, so scripted keys
   must wait until the previous one was taken (`Session::press`).
@@ -71,6 +76,18 @@ as optional, clearly separated fast paths.
   F000:E987 directly.
 - One clock drives PIT readback, IRQ0, retrace bits and pacing; stubbing any
   of them changes game speed or hangs polling loops.
+- Snapshots serialise `Machine` with serde. Any new machine state (a field of
+  `Machine`, `PcBus`, `Cpu`, `Dos` or a device) must be serialised, not
+  `#[serde(skip)]`, or it is lost on restore; skip only host-side plumbing,
+  and say in `snapshot.rs` what a restore keeps for it. Changing a serialised
+  type changes the format: bump `snapshot::VERSION`. The BIOS ROM with its
+  trap stubs lives in `bus.ram`, so a state brings back the ROM it was saved
+  with: changing the ROM image or what a trap number does needs a bump too.
+  The determinism test catches state that is missed, if the game exercises
+  it.
+- A state's STARA/STARB copies keep their modification times: DOS puts file
+  times into FCBs in guest memory, so a restore must see the times the
+  machine saw.
 
 ## How to test
 
@@ -80,6 +97,12 @@ cargo run -p starflight -- words | head     # expect 1703 words on stderr summar
 scripts/fetch-sst.sh                        # once: SingleStepTests 8088 data (~730 MB)
 cargo test --release -p cpu8086 --test sst  # ~2.56M hardware tests, ~1 s
 ```
+
+Tests that need the game (the snapshot determinism test, the state-load
+test in `session.rs`) skip with a message when `game/START/STARFLT.COM` is
+absent. They work on scratch copies under `$SF_TEST_DIR/snap-tests/`
+(default: the target dir's tmp dir for integration tests, the system temp
+dir for unit tests) and remove them when they pass.
 
 The SST harness reads `SST_8088_DIR` (default
 `/storage/scratch/claude/sst-8088/v2`) and skips if the data is absent.

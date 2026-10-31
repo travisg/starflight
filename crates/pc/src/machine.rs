@@ -14,6 +14,7 @@ use crate::pit::MASTER_PER_PIT;
 use crate::video::{Frame, MASTER_PER_FRAME, MASTER_PER_LINE, VRETRACE_LINE};
 use crate::{Stop, bios};
 use cpu8086::{Cpu, Step, flags, phys};
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 #[derive(Clone, Debug)]
@@ -35,6 +36,9 @@ impl Default for Config {
 /// Called before every instruction when set.
 pub type Hook = Box<dyn FnMut(&Cpu, &PcBus)>;
 
+/// Snapshots (`save_state`, `restore_state` in `snapshot.rs`) hold every
+/// field that affects execution; `hook` and `file_log` stay with the host.
+#[derive(Serialize, Deserialize)]
 pub struct Machine {
     pub cpu: Cpu,
     pub bus: PcBus,
@@ -45,8 +49,10 @@ pub struct Machine {
     next_event: u64,
     pub frames: u64,
     pub instructions: u64,
+    #[serde(skip)]
     pub hook: Option<Hook>,
     /// DOS file transfers, kept when `Some`.
+    #[serde(skip)]
     pub file_log: Option<Vec<FileIo>>,
 }
 

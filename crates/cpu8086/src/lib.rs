@@ -21,6 +21,9 @@
 //! `FE F8 nn` (FE /7 with a register operand, undefined on the 8086) is the
 //! emulator trap: it returns [`Step::Trap`] with `nn` and IP past the three
 //! bytes. The machine's BIOS ROM uses it to call into Rust.
+//!
+//! The optional `serde` feature derives `Serialize`/`Deserialize` for [`Cpu`]
+//! (all of its state, private fields included) for machine snapshots.
 
 mod alu;
 mod exec;
@@ -91,6 +94,7 @@ pub enum Step {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 enum Rep {
     #[default]
     None,
@@ -101,6 +105,7 @@ enum Rep {
 }
 
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Cpu {
     pub regs: [u16; 8],
     pub sregs: [u16; 4],

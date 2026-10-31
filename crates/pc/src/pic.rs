@@ -6,7 +6,9 @@
 
 //! 8259A interrupt controller (single, as on the PC/XT), ports 20h-21h.
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+use serde::{Deserialize, Serialize};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 enum Init {
     Ready,
     Icw2,
@@ -14,7 +16,7 @@ enum Init {
     Icw4,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Pic {
     irr: u8,
     isr: u8,

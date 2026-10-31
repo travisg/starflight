@@ -14,6 +14,7 @@ pub mod keyboard;
 pub mod machine;
 pub mod pic;
 pub mod pit;
+pub mod snapshot;
 pub mod video;
 
 pub use machine::{Config, Machine};

@@ -33,6 +33,7 @@ mod tests;
 
 use crate::hle::{Hle, rd8, rd16, set_stacked_flag, wr8, wr16};
 use cpu8086::{AX, BP, BX, CS, CX, Cpu, DI, DS, DX, ES, SI, SP, SS, flags, phys};
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 /// One read or write of a game file, for tracing which data went where.
@@ -62,13 +63,22 @@ const ENV_PARAS: u16 = 0x20;
 /// Default drive C: (A: = 0).
 const DEFAULT_DRIVE: u8 = 2;
 
+/// Snapshots keep the console and DTA. The drive directory and logging
+/// settings belong to the host side; open host files are not kept, and are
+/// reopened by name on the next access.
+#[derive(Serialize, Deserialize)]
 pub struct Dos {
+    #[serde(skip)]
     pub drive_dir: PathBuf,
     /// When set, file transfers are appended to `io_log`.
+    #[serde(skip)]
     pub log_io: bool,
+    /// Emptied by the machine after every INT 21h.
+    #[serde(skip)]
     pub io_log: Vec<FileIo>,
     /// Bytes written by functions 02h and 09h.
     pub console: Vec<u8>,
+    #[serde(skip)]
     files: host::OpenFiles,
     /// Disk transfer address (segment, offset).
     dta: (u16, u16),

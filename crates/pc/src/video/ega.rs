@@ -10,6 +10,8 @@
 //! Odd/even and chain addressing are not modelled here; the text and
 //! CGA-compatible modes use a linear buffer instead (see `Video::cga_mem`).
 
+use serde::{Deserialize, Serialize};
+
 pub const PLANE_SIZE: usize = 0x10000;
 
 /// Graphics controller register indices.
@@ -23,6 +25,7 @@ pub const GC_MISC: usize = 6;
 pub const GC_DONT_CARE: usize = 7;
 pub const GC_BIT_MASK: usize = 8;
 
+#[derive(Serialize, Deserialize)]
 pub struct Planes {
     /// Plane `p` byte `off` is at `p * PLANE_SIZE + off`.
     pub mem: Box<[u8]>,

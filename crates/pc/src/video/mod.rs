@@ -44,6 +44,7 @@ use crate::hle::{Hle, bda, wr8, wr16};
 use cpu8086::Cpu;
 use ega::{GC_MISC, Planes};
 use modes::{Kind, ModeParams};
+use serde::{Deserialize, Serialize};
 
 pub use font::CP437;
 
@@ -101,6 +102,7 @@ enum Target {
     Cga(usize),
 }
 
+#[derive(Serialize, Deserialize)]
 pub struct Video {
     planes: Planes,
     /// The B8000 window: text and CGA-compatible modes.
@@ -336,6 +338,12 @@ impl Video {
 
     pub fn render(&self, frame: &mut Frame) {
         render::render(self, frame);
+    }
+
+    /// Display memory has the sizes the adapter indexes by (checked on
+    /// snapshot restore).
+    pub(crate) fn sizes_ok(&self) -> bool {
+        self.planes.mem.len() == 4 * ega::PLANE_SIZE && self.cga_mem.len() == CGA_MEM_SIZE
     }
 
     /// The screen as text in text modes (CP437 mapped to Unicode), else `None`.

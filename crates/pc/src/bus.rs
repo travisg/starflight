@@ -17,6 +17,7 @@ use crate::pic::Pic;
 use crate::pit::{MASTER_PER_PIT, Pit, SpeakerState};
 use crate::video::Video;
 use crate::Stop;
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 /// The PC's 14.31818 MHz crystal; all timing is in its ticks.
@@ -24,6 +25,9 @@ pub const MASTER_HZ: u64 = 14_318_180;
 /// The clock is kept in 1/256 master ticks so CPU speed scales finely.
 pub const FP_SHIFT: u32 = 8;
 
+/// Snapshots leave out `stop`, `speaker_log` and `absent_ports`, which are
+/// diagnostics and front-end plumbing, not machine state.
+#[derive(Serialize, Deserialize)]
 pub struct PcBus {
     /// The whole 1 MiB address space; A0000-BFFFF is unused (video decodes it).
     pub ram: Vec<u8>,
@@ -36,10 +40,13 @@ pub struct PcBus {
     /// Time in 1/256 master ticks.
     pub now_fp: u64,
     /// Set by a device access the machine must stop for.
+    #[serde(skip)]
     pub stop: Option<Stop>,
     /// Speaker changes with their master tick, when recording is on.
+    #[serde(skip)]
     pub speaker_log: Option<Vec<(u64, SpeakerState)>>,
     /// Accesses to ports of absent hardware, by port.
+    #[serde(skip)]
     pub absent_ports: BTreeMap<u16, u64>,
     /// A device's next event time may have changed (PIT reprogrammed,
     /// keyboard acknowledged); the machine reschedules.

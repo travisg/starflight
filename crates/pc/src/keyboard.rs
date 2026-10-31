@@ -11,12 +11,13 @@
 //! delivered only after the previous IRQ1 was acknowledged (by the BIOS INT 9
 //! handler, or by pulsing port 61h bit 7) and a short gap has passed.
 
+use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 
 /// Gap between scan codes, about what an XT keyboard's serial link takes.
 pub const CODE_GAP_MASTER: u64 = 14_318; // 1 ms
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct KeyboardCtl {
     queue: VecDeque<u8>,
     pub latch: u8,
@@ -27,6 +28,11 @@ pub struct KeyboardCtl {
 impl KeyboardCtl {
     pub fn push(&mut self, code: u8) {
         self.queue.push_back(code);
+    }
+
+    /// Codes the BIOS has not handled yet: the latched one, then the queue.
+    pub fn pending(&self) -> impl Iterator<Item = u8> + '_ {
+        self.busy.then_some(self.latch).into_iter().chain(self.queue.iter().copied())
     }
 
     /// Nothing queued and nothing waiting to be handled.

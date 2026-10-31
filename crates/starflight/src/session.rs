@@ -8,8 +8,10 @@
 //! keyboard input and stop reports. Used by the headless runner and the SDL
 //! front end alike.
 
+use crate::saves::Saves;
 use anyhow::{Context, Result, bail};
 use cpu8086::{BP, BX, CS, phys};
+use pc::hle::bda;
 use pc::{Config, Machine, Stop, bios};
 use sfforth::consts::STARFLT_COM_SIZE;
 use sfforth::directory::{self, DirEntry};
@@ -17,7 +19,7 @@ use sfforth::trace::{Entry, JMP_BX, Names, Recent};
 use sfforth::{dict, segment_image};
 use std::cell::RefCell;
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 /// A step of a key script.
@@ -85,10 +87,13 @@ pub struct Session {
     /// Print the text screen whenever it changes.
     pub show_text: bool,
     last_text: Option<Vec<String>>,
+    cpu_mhz: f64,
 }
 
 /// Longest wait for the game to take a scripted key before giving up on it.
 const KEY_TIMEOUT_MS: f64 = 20_000.0;
+/// Forth words kept for stop reports.
+const RECENT_WORDS: usize = 64;
 
 impl Session {
     pub fn new(slot_dir: &Path, cpu_mhz: f64, mut trace: Option<Box<dyn Write>>) -> Result<Session> {
@@ -103,7 +108,7 @@ impl Session {
         let mut machine = Machine::new(&cfg, slot_dir.to_path_buf(), &com);
         machine.file_log = Some(Vec::new());
         let names = Rc::new(Names::from_words(&dict::decode_dictionary(&segment_image(&com))));
-        let recent = Rc::new(RefCell::new(Recent::new(64)));
+        let recent = Rc::new(RefCell::new(Recent::new(RECENT_WORDS)));
         let (r, n) = (recent.clone(), names.clone());
         machine.hook = Some(Box::new(move |cpu, bus| {
             if cpu.sregs[CS] != game_cs {
@@ -126,7 +131,39 @@ impl Session {
             directory: directory::parse(&stara),
             show_text: false,
             last_text: None,
+            cpu_mhz,
         })
+    }
+
+    /// Restores state `name` of save `slot` (see `Saves::load_state`), keeping
+    /// this session's CPU speed, and releases the modifier keys the restored
+    /// machine holds but the host does not (`host_held`: their make codes).
+    /// Returns the backup of the slot's files.
+    pub fn load_state(&mut self, saves: &Saves, slot: &str, name: &str, host_held: &[u8]) -> Result<PathBuf> {
+        let backup = saves.load_state(slot, name, &mut self.machine)?;
+        self.machine.set_speed(self.cpu_mhz);
+        let stara = self.machine.dos.drive_dir.join("STARA.COM");
+        self.directory = directory::parse(&std::fs::read(&stara).with_context(|| format!("reading {}", stara.display()))?);
+        *self.recent.borrow_mut() = Recent::new(RECENT_WORDS);
+        self.last_text = None;
+        self.release_modifiers(host_held);
+        Ok(backup)
+    }
+
+    /// Queues a break code for each of Ctrl, Shift and Alt that the BIOS will
+    /// have down once the pending scan codes are handled, unless `host_held`
+    /// lists it. A state saved with Ctrl+F11 has Ctrl down.
+    fn release_modifiers(&mut self, host_held: &[u8]) {
+        use pc::keyboard::shift::{ALT, CTRL, LSHIFT, RSHIFT};
+        let mut flags = self.machine.bus.ram[bda::KBD_FLAGS as usize];
+        for code in self.machine.bus.kbd.pending() {
+            pc::keyboard::translate(code, &mut flags);
+        }
+        for (make, bit) in [(0x1d, CTRL), (0x2a, LSHIFT), (0x36, RSHIFT), (0x38, ALT)] {
+            if flags & bit != 0 && !host_held.contains(&make) {
+                self.machine.key_code(make | 0x80);
+            }
+        }
     }
 
     /// Runs `ms` of emulated time in slices, printing text-screen changes.
@@ -273,6 +310,46 @@ impl Session {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::saves::scratch_dir;
+    use pc::keyboard::shift::CTRL;
+
+    fn ctrl_down(s: &Session) -> bool {
+        s.machine.bus.ram[bda::KBD_FLAGS as usize] & CTRL != 0
+    }
+
+    /// Needs the game; skipped without it.
+    #[test]
+    fn load_releases_modifiers_the_host_does_not_hold() {
+        let game = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../game/START"));
+        if !game.join("STARFLT.COM").is_file() {
+            eprintln!("skipping: {} is absent", game.join("STARFLT.COM").display());
+            return;
+        }
+        let dir = scratch_dir("modifiers");
+        let saves = Saves::new(dir.clone());
+        let slot = saves.create("s", game, false).unwrap();
+        let mut s = Session::new(&slot, 4.77, None).unwrap();
+        s.run_ms(2000.0).unwrap();
+        s.machine.key_code(0x1d);
+        s.run_ms(100.0).unwrap();
+        assert!(ctrl_down(&s));
+        saves.save_state("s", Some("held"), &s.machine, None).unwrap();
+        s.machine.key_code(0x9d);
+        s.run_ms(100.0).unwrap();
+        s.machine.key_code(0x1d);
+        saves.save_state("s", Some("queued"), &s.machine, None).unwrap();
+
+        let mut t = Session::new(&slot, 4.77, None).unwrap();
+        for state in ["held", "queued"] {
+            t.load_state(&saves, "s", state, &[0x1d]).unwrap();
+            t.run_ms(100.0).unwrap();
+            assert!(ctrl_down(&t), "{state}: the host holds Ctrl");
+            t.load_state(&saves, "s", state, &[]).unwrap();
+            t.run_ms(100.0).unwrap();
+            assert!(!ctrl_down(&t), "{state}: Ctrl released");
+        }
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     #[test]
     fn key_scripts() {
